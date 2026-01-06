@@ -48,8 +48,10 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
     targetJob: string;
   } | null>(null);
   
-  // 학습프로필 완료 여부 계산 함수 (localStorage 기준)
+  // 학습프로필 완료 여부 계산 함수 (백엔드 우선, localStorage 보조)
   const isProfileCompleted = (): boolean => {
+    if (user?.profileCompleted === false) return false;
+    if (user?.profileCompleted === true) return true;
     const profile = localStorage.getItem('userProfile');
     if (!profile) {
       return false;
@@ -77,6 +79,12 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
       
       // 1) getMe() 호출
       const me = await getMe();
+      if (import.meta.env.DEV) {
+        console.log("[CareerPackApp] /me success", {
+          email: me?.email,
+          profileCompleted: me?.profileCompleted
+        });
+      }
       setUser(me);
     } catch (err: any) {
       console.error("유저 정보 로딩 실패:", err);
@@ -270,6 +278,7 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
     // roadmap, resume, interview 접근 시 학습프로필 완료 여부 확인
     if ((page === 'roadmap' || page === 'resume' || page === 'interview') && !isProfileCompleted()) {
       setShowProfileSetupDialog(true);
+      onPageChange('profile');
       return;
     }
     
@@ -509,6 +518,7 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
       return (
         <LearningProfile 
           userId={me?.id} 
+          email={me?.email}
           onProfileComplete={handleProfileComplete}
           onProfileInfoChange={handleProfileInfoChange}
         />

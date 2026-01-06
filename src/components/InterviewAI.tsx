@@ -7,7 +7,7 @@ import { Label } from "./ui/label";
 import { Input } from "./ui/input"; // Input은 다른 곳에서 사용되므로 유지
 import { Mic, Brain, Play, Settings, Check, Clock, Star, TrendingUp, MessageCircle, BarChart3, Target, FileText, Loader } from "lucide-react"; 
 import { MAJOR_OPTIONS, getJobOptionsByMajor } from "../data/departmentJobData";
-import { submitInterviewAnswer } from "../api";
+import fetchApi, { submitInterviewAnswer } from "../api";
 
 type InterviewStep = 'main' | 'preparation' | 'interview' | 'analysis' | 'result';
 
@@ -78,25 +78,16 @@ export function InterviewAI() {
     setError(null);
 
     try {
-      const response = await fetch("http://13.125.192.47:8090/api/interview/question-gen", {
+      const data = await fetchApi("/api/interview/question-gen", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           userId: 1, // 시연용 하드코딩
           coverLetter:
             resumeText && resumeText.trim().length > 0
               ? resumeText
               : `${majorInput} ${jobInput} 자기소개 기반 질문입니다.`,
-        }),
+        },
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data?.error || "면접 질문 생성에 실패했습니다.");
-        setFetchedQuestions([]);
-        return;
-      }
 
       // QuestionItemDto[] -> string[] 변환
       const questionTexts = Array.isArray(data.questions)
@@ -114,7 +105,7 @@ export function InterviewAI() {
       }
 
     } catch (err: any) {
-      setError("서버 연결에 실패했습니다. 백엔드를 확인해주세요.");
+      setError(err?.message || "서버 연결에 실패했습니다. 백엔드를 확인해주세요.");
       setFetchedQuestions([]);
     } finally {
       setIsLoading(false);

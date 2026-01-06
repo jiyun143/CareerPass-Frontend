@@ -96,18 +96,17 @@ const hardcodedFeedback = `## 전체적인 평가
 
 interface LearningProfileProps {
   userId?: number;
+  email?: string;
   onProfileComplete?: () => void;
   onProfileInfoChange?: (userInfo: { name: string; major: string; targetJob: string }) => void;
 }
 
-// ✅ 이메일 하드코딩
-const FIXED_EMAIL = "jiyun1430@mju.ac.kr";
-
-export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange }: LearningProfileProps = {}) {
+export function LearningProfile({ userId, email, onProfileComplete, onProfileInfoChange }: LearningProfileProps = {}) {
+  const emailFromMe = email || "";
   const [userInfo, setUserInfo] = useState({
     id: null as number | null,
     name: "",
-    email: FIXED_EMAIL,
+    email: emailFromMe,
     major: "",
     targetJob: ""
   });
@@ -124,7 +123,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [editForm, setEditForm] = useState({
     name: "",
-    email: FIXED_EMAIL,
+    email: emailFromMe,
     major: "",
     targetJob: ""
   });
@@ -158,7 +157,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
             const loadedUserInfo = {
               id: null as number | null,
               name: parsed.name || "",
-              email: parsed.email || FIXED_EMAIL,
+              email: parsed.email || emailFromMe,
               major: parsed.major || "",
               targetJob: parsed.targetJob || parsed.jobTitle || ""
             };
@@ -170,7 +169,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
             const defaultUserInfo = {
               id: null as number | null,
               name: "",
-              email: FIXED_EMAIL,
+              email: emailFromMe,
               major: "",
               targetJob: ""
             };
@@ -182,7 +181,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
           const defaultUserInfo = {
             id: null as number | null,
             name: "",
-            email: FIXED_EMAIL,
+            email: emailFromMe,
             major: "",
             targetJob: ""
           };
@@ -195,7 +194,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
         const defaultUserInfo = {
           id: null as number | null,
           name: "",
-          email: FIXED_EMAIL,
+          email: emailFromMe,
           major: "",
           targetJob: ""
         };
@@ -208,7 +207,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
       const defaultUserInfo = {
         id: null as number | null,
         name: "",
-        email: FIXED_EMAIL,
+        email: emailFromMe,
         major: "",
         targetJob: ""
       };
@@ -219,6 +218,19 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
       setIsLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!emailFromMe) return;
+    setUserInfo((prev) => {
+      if (prev.email === emailFromMe) return prev;
+      const next = { ...prev, email: emailFromMe };
+      if (import.meta.env.DEV) {
+        console.log("[LearningProfile] email prefilled from /me", emailFromMe);
+      }
+      return next;
+    });
+    setEditForm((prev) => ({ ...prev, email: emailFromMe }));
+  }, [emailFromMe]);
 
   // 자기소개서 리스트 로드
   const loadIntroductions = async () => {
@@ -382,7 +394,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
     // 모달 열 때 입력 필드 초기값 설정
     setEditForm({
       name: userInfo.name || "",
-      email: FIXED_EMAIL, // ✅ 항상 고정 이메일
+      email: userInfo.email || emailFromMe,
       major: userInfo.major || "",
       targetJob: userInfo.targetJob || ""
     });
@@ -400,7 +412,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
       const newUserInfo = {
         id: userInfo.id,
         name: editForm.name,
-        email: FIXED_EMAIL,
+        email: userInfo.email || emailFromMe,
         major: editForm.major,
         targetJob: editForm.targetJob
       };
@@ -414,7 +426,7 @@ export function LearningProfile({ userId, onProfileComplete, onProfileInfoChange
         name: editForm.name,
         major: editForm.major,
         jobTitle: editForm.targetJob,
-        email: FIXED_EMAIL
+        email: userInfo.email || emailFromMe
       };
       localStorage.setItem('learningProfile', JSON.stringify(learningProfile));
       
