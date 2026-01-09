@@ -35,7 +35,7 @@ const fetchApi = async (endpoint, options = {}) => {
     throw new Error("VITE_API_BASE_URL is not configured");
   }
 
-  const { body, headers: customHeaders, ...rest } = options;
+  const { body: rawBody, headers: customHeaders, ...rest } = options;
   const headers = new Headers(customHeaders || {});
   const token = getAccessToken();
 
@@ -47,16 +47,42 @@ const fetchApi = async (endpoint, options = {}) => {
     }
   }
 
-  const isFormData = body instanceof FormData;
-  const normalizedBody =
-    body === undefined || body === null
-      ? undefined
-      : !isFormData && typeof body !== "string" && !(body instanceof Blob)
-        ? JSON.stringify(body)
-        : body;
+  const isFormData =
+    typeof FormData !== "undefined" && rawBody instanceof FormData;
 
-  if (!isFormData && normalizedBody !== undefined && !headers.has("Content-Type")) {
+  if (isFormData) {
+    headers.delete("Content-Type");
+    headers.delete("content-type");
+  } else {
     headers.set("Content-Type", "application/json");
+  }
+
+  const normalizedBody = isFormData
+    ? rawBody
+    : rawBody !== undefined && rawBody !== null
+      ? JSON.stringify(rawBody)
+      : undefined;
+
+  if (isDev) {
+    const method = rest?.method || "GET";
+    console.log("[fetchApi] isFormData", isFormData);
+    console.log("[fetchApi] final Content-Type", headers.get("Content-Type"));
+    console.log(
+      "[fetchApi] has content-type?",
+      headers.has("Content-Type"),
+      headers.has("content-type")
+    );
+    if (isFormData && (headers.has("Content-Type") || headers.has("content-type"))) {
+      console.warn("[fetchApi] FormData request has Content-Type header set unexpectedly");
+    }
+    console.log("[fetchApi] request", {
+      url: `${API_BASE_URL}${endpoint}`,
+      method,
+    });
+    if (isFormData) {
+      console.log("[fetchApi] body instanceof FormData", rawBody instanceof FormData);
+    }
+    console.log("[fetchApi] stack", new Error().stack);
   }
 
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -130,14 +156,11 @@ export const createUserWithEmail = async (email) =>
 
 export const getMe = async () => fetchApi("/me", { method: "GET" });
 
-export const updateUserProfile = async (id, { nickname, major, targetJob }) =>
-  fetchApi(`/api/users/${id}/profile`, {
+export const updateMyProfile = async ({ nickname, major, targetJob }) =>
+  fetchApi("/api/users/me/profile", {
     method: "PATCH",
     body: { nickname, major, targetJob },
   });
-
-export const getUserById = async (id) =>
-  fetchApi(`/api/users/${id}`, { method: "GET" });
 
 export const getUsers = async () => fetchApi("/api/users", { method: "GET" });
 
@@ -161,25 +184,28 @@ export const generateInterviewQuestions = async ({ userId, coverLetter }) =>
     body: { userId, coverLetter },
   });
 
-export async function submitInterviewAnswer(meta, file) {
-  if (!file) {
-    throw new Error("면접 음성 파일(file)이 없습니다.");
+export async function submitInterviewAnswer(formData) {
+  if (!(formData instanceof FormData)) {
+    throw new Error("FormData 객체가 필요합니다.");
   }
-  if (!meta || typeof meta !== "object") {
-    throw new Error("meta 객체가 필요합니다.");
-  }
-
-  const formData = new FormData();
-  const metaJson = JSON.stringify(meta);
-  const metaBlob = new Blob([metaJson], { type: "application/json" });
-  formData.append("meta", metaBlob);
-  formData.append("file", file, file.name ?? `answer-${Date.now()}.webm`);
 
   return fetchApi("/api/feedback/interview/ai", {
     method: "POST",
     body: formData,
   });
 }
+
+export const startInterview = async ({ userId, jobApplied, resumeContent } = {}) =>
+  fetchApi("/api/feedback/interview/start", {
+    method: "POST",
+    body: { userId, jobApplied, resumeContent },
+  });
+
+export const finalizeInterview = async ({ interviewId, totalDurationSec }) =>
+  fetchApi("/api/feedback/interview/finalize", {
+    method: "POST",
+    body: { interviewId, totalDurationSec },
+  });
 
 export const uploadInterviewAudio = async () => {
   console.warn("⚠️ uploadInterviewAudio는 더 이상 사용하지 않습니다. submitInterviewAnswer를 사용하세요.");
@@ -222,27 +248,51 @@ export const getInterviewAIFeedback = async () => {
 export const getFeedbackByInterviewId = async (interviewId) =>
   fetchApi(`/api/feedback/interview/${interviewId}`, { method: "GET" });
 
+export const getMyIntroductionFeedbacks = async () =>
+  fetchApi("/api/feedback/me/introduction", { method: "GET" });
+
+export const getMyInterviewFeedbacks = async () =>
+  fetchApi("/api/feedback/me/interview", { method: "GET" });
+
+export const getInterviewHistory = async () =>
+  fetchApi("/api/feedback/interview/history", { method: "GET" });
+
+export const getInterviewDetail = async (interviewId) =>
+  fetchApi(`/api/feedback/interview/${interviewId}`, { method: "GET" });
+
+export const updateFeedbackTitle = async (id, title) =>
+  fetchApi(`/api/feedback/${id}/title`, {
+    method: "PATCH",
+    body: { title },
+  });
+
+export const updateInterviewTitle = async (interviewId, title) =>
+  fetchApi(`/api/feedback/interview/${interviewId}/title`, {
+    method: "PATCH",
+    body: { title },
+  });
+
+export const deleteFeedback = async (id) =>
+  fetchApi(`/api/feedback/${id}`, {
+    method: "DELETE",
+  });
+
+export const deleteInterviewFeedback = async (interviewId) =>
+  fetchApi(`/api/feedback/interview/${interviewId}`, {
+    method: "DELETE",
+  });
+
 export const getLogoutSuccess = async () =>
   fetchApi("/api/logout-success", { method: "GET" });
 
-export const createIntroductionAIFeedback = async (userId, resumeContent) =>
+export const createIntroductionAIFeedback = async (resumeContent) =>
   fetchApi("/api/feedback/introduction/ai", {
     method: "POST",
-    body: { userId, resumeContent },
+    body: { resumeContent },
   });
 
 export async function fetchUserLearningProfile(userId = 1) {
   return fetchApi(`/api/users/${userId}`, { method: "GET" });
-}
-
-export async function requestResumeFeedback(userId, resumeContent) {
-  return fetchApi("/resume/resume/feedback", {
-    method: "POST",
-    body: {
-      userId: Number(userId),
-      resumeContent: String(resumeContent),
-    },
-  });
 }
 
 export default fetchApi;

@@ -5,27 +5,44 @@ import { Progress } from "./ui/progress";
 import { Textarea } from "./ui/textarea";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input"; // Input은 다른 곳에서 사용되므로 유지
-import { Mic, Brain, Play, Settings, Check, Clock, Star, TrendingUp, MessageCircle, BarChart3, Target, FileText, Loader } from "lucide-react"; 
+import { Mic, Brain, Play, Check, Clock, Star, TrendingUp, MessageCircle, BarChart3, Target, FileText, Loader, ArrowLeft } from "lucide-react"; 
 import { MAJOR_OPTIONS, getJobOptionsByMajor } from "../data/departmentJobData";
-import fetchApi, { submitInterviewAnswer } from "../api";
+import fetchApi, {
+  submitInterviewAnswer,
+  getInterviewDetail,
+  startInterview as startInterviewSession,
+  finalizeInterview,
+  updateInterviewTitle
+} from "../api";
 
 type InterviewStep = 'main' | 'preparation' | 'interview' | 'analysis' | 'result';
 
 // AnswerResult 타입 정의
 type AnswerResult = {
-  transcript: string;
-  score: number;
-  timeMs: number;
-  fluency: number;
-  contentDepth: number;
-  structure: number;
-  fillerCount: number;
-  improvements: string[];
-  strengths: string[];
-  risks: string[];
+  transcript?: string | null;
+  sttStatus?: string | null;
+  score?: number | null;
+  timeMs?: number | null;
+  fluency?: number | null;
+  contentDepth?: number | null;
+  structure?: number | null;
+  fillerCount?: number | null;
+  improvements?: string[] | null;
+  strengths?: string[] | null;
+  risks?: string[] | null;
 };
 
-export function InterviewAI() {
+interface InterviewAIProps {
+  onNavigateProfile?: () => void;
+  initialInterviewId?: number | null;
+  onClearInterviewResultId?: () => void;
+}
+
+export function InterviewAI({
+  onNavigateProfile,
+  initialInterviewId,
+  onClearInterviewResultId
+}: InterviewAIProps = {}) {
   const [currentStep, setCurrentStep] = useState<InterviewStep>('main');
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
@@ -41,6 +58,7 @@ export function InterviewAI() {
   const [fetchedQuestions, setFetchedQuestions] = useState<string[]>([]); 
   const [isLoading, setIsLoading] = useState(false); 
   const [error, setError] = useState<string | null>(null); 
+  const [isLoadingInterviewDetail, setIsLoadingInterviewDetail] = useState(false);
   // -------------------------
 
   // 학과 선택에 따른 직무 옵션 동적 업데이트
@@ -59,12 +77,204 @@ export function InterviewAI() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const lastRecordedBlobRef = useRef<Blob | null>(null);
+  const interviewStartAtRef = useRef<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [interviewId, setInterviewId] = useState<number | null>(null);
+  const interviewIdRef = useRef<number | null>(null);
   const [hasMicPermission, setHasMicPermission] = useState<boolean | null>(null); // 마이크 권한 상태
   const [analysisResult, setAnalysisResult] = useState<any>(null); // AI 분석 결과
+  const [interviewSummary, setInterviewSummary] = useState<any>(null);
+  const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [micConnected, setMicConnected] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [titleError, setTitleError] = useState<string | null>(null);
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
+
+  const setInterviewIdSafe = (value: number | null) => {
+    setInterviewId(value);
+    interviewIdRef.current = value;
+  };
+
+  useEffect(() => {
+    const nextTitle =
+      typeof interviewSummary?.title === "string" && interviewSummary.title.trim()
+        ? interviewSummary.title.trim()
+        : "면접";
+    setTitleDraft(nextTitle);
+    setIsEditingTitle(false);
+    setTitleError(null);
+  }, [interviewSummary?.title]);
+
+  const getUserId = () => {
+    const userIdStr = localStorage.getItem('userId');
+    const parsedId = userIdStr ? parseInt(userIdStr, 10) : 1;
+    return Number.isFinite(parsedId) ? parsedId : 1;
+  };
+
+  const computePerQuestionTimes = (
+    rawTimes: Array<number | null>,
+    summaryTotalMs: number | null
+  ) => {
+    const validTimes = rawTimes.filter((time): time is number => Number.isFinite(time));
+    if (validTimes.length < 2) {
+      return { perTimes: rawTimes, isCumulative: false };
+    }
+    const sumTimes = validTimes.reduce((sum, value) => sum + value, 0);
+    const lastTime = validTimes[validTimes.length - 1];
+    const isNonDecreasing = validTimes.every((value, index) =>
+      index === 0 ? true : value >= validTimes[index - 1]
+    );
+    const looksLikeCumulative =
+      isNonDecreasing &&
+      lastTime > 0 &&
+      (sumTimes > lastTime * 1.2 ||
+        (summaryTotalMs !== null && Math.abs(lastTime - summaryTotalMs) <= summaryTotalMs * 0.2));
+
+    if (!looksLikeCumulative) {
+      return { perTimes: rawTimes, isCumulative: false };
+    }
+
+    const perTimes = rawTimes.map((value, index) => {
+      if (!Number.isFinite(value)) return null;
+      if (index === 0) return value as number;
+      const prev = rawTimes[index - 1];
+      if (!Number.isFinite(prev)) return value as number;
+      return Math.max(0, (value as number) - (prev as number));
+    });
+    return { perTimes, isCumulative: true };
+  };
+
+  const applyInterviewDetail = useCallback((data: any) => {
+    const summary = data?.summary ?? null;
+    const rawAnswers = Array.isArray(data?.answers) ? data.answers : [];
+    setInterviewSummary(summary);
+    setFetchedQuestions(rawAnswers.map((answer: any) => answer?.questionText || ""));
+    const rawTimes = rawAnswers.map((answer: any) =>
+      Number.isFinite(answer?.timeMs) ? answer.timeMs : null
+    );
+    const summaryTotalMs =
+      Number.isFinite(summary?.totalDurationSec) ? summary.totalDurationSec * 1000 : null;
+    const { perTimes, isCumulative } = computePerQuestionTimes(rawTimes, summaryTotalMs);
+    if (import.meta.env.DEV) {
+      console.log("[InterviewAI] timeMs check", {
+        rawTimes,
+        perTimes,
+        summaryTotalMs,
+        isCumulative
+      });
+    }
+    const mappedResults: AnswerResult[] = rawAnswers.map((answer: any, index: number) => {
+      const rawScore = answer?.score;
+      if (!Number.isFinite(rawScore)) {
+        console.warn("[InterviewAI] score missing", { index, answer });
+      }
+      const transcriptText =
+        typeof answer?.transcript === "string" && answer.transcript.trim()
+          ? answer.transcript
+          : null;
+      return {
+        transcript: transcriptText,
+        sttStatus: typeof answer?.sttStatus === "string" ? answer.sttStatus : null,
+        score: Number.isFinite(rawScore) ? rawScore : null,
+        timeMs: Number.isFinite(perTimes[index]) ? perTimes[index] : null,
+        fluency: Number.isFinite(answer?.fluency) ? answer.fluency : null,
+        contentDepth: Number.isFinite(answer?.contentDepth) ? answer.contentDepth : null,
+        structure: Number.isFinite(answer?.structure) ? answer.structure : null,
+        fillerCount: Number.isFinite(answer?.fillerCount) ? answer.fillerCount : null,
+        improvements: Array.isArray(answer?.improvements) ? answer.improvements : [],
+        strengths: Array.isArray(answer?.strengths) ? answer.strengths : [],
+        risks: Array.isArray(answer?.risks) ? answer.risks : []
+      };
+    });
+    setAnswerResults(mappedResults);
+    setAnswers(mappedResults.map((result) => result.transcript || ""));
+  }, []);
 
   const questions = fetchedQuestions;
+  const canStartInterview = resumeText.trim().length > 0;
+  const handleGoToProfile = () => {
+    if (!onNavigateProfile) return;
+    onNavigateProfile();
+    if (typeof window !== "undefined") {
+      window.scrollTo(0, 0);
+    }
+  };
+
+  const handleEditTitle = () => {
+    setTitleError(null);
+    setIsEditingTitle(true);
+  };
+
+  const handleCancelTitleEdit = () => {
+    const fallbackTitle =
+      typeof interviewSummary?.title === "string" && interviewSummary.title.trim()
+        ? interviewSummary.title.trim()
+        : "면접";
+    setTitleDraft(fallbackTitle);
+    setTitleError(null);
+    setIsEditingTitle(false);
+  };
+
+  const handleSaveTitle = async () => {
+    const trimmedTitle = titleDraft.trim();
+    if (!trimmedTitle) {
+      setTitleError("제목을 입력해주세요.");
+      return;
+    }
+    const activeInterviewId = interviewIdRef.current ?? interviewId;
+    if (!activeInterviewId) {
+      setTitleError("면접 정보를 찾을 수 없습니다.");
+      return;
+    }
+    setIsSavingTitle(true);
+    setTitleError(null);
+    try {
+      await updateInterviewTitle(activeInterviewId, trimmedTitle);
+      setInterviewSummary((prev: any) => ({
+        ...(prev || {}),
+        title: trimmedTitle
+      }));
+      window.dispatchEvent(new CustomEvent("feedback:interview:title-updated", {
+        detail: { interviewId: activeInterviewId, title: trimmedTitle }
+      }));
+      setIsEditingTitle(false);
+    } catch (error: any) {
+      console.error("면접 제목 수정 실패:", error);
+      setTitleError("제목을 저장하지 못했습니다.");
+    } finally {
+      setIsSavingTitle(false);
+    }
+  };
+
+  const loadInterviewDetail = useCallback(
+    async (interviewId: number) => {
+      setIsLoadingInterviewDetail(true);
+      setError(null);
+      try {
+        const data = await getInterviewDetail(interviewId);
+        setInterviewIdSafe(interviewId);
+        applyInterviewDetail(data);
+        setAnalysisResult(null);
+        setCurrentStep("result");
+      } catch (err: any) {
+        console.error("면접 결과 조회 실패:", err);
+        setError(err?.message || "면접 결과를 불러오지 못했습니다.");
+      } finally {
+        setIsLoadingInterviewDetail(false);
+        if (onClearInterviewResultId) {
+          onClearInterviewResultId();
+        }
+      }
+    },
+    [applyInterviewDetail, onClearInterviewResultId]
+  );
+
+  useEffect(() => {
+    if (!initialInterviewId) return;
+    loadInterviewDetail(initialInterviewId);
+  }, [initialInterviewId, loadInterviewDetail]);
     
   // --- API 호출 함수 (핵심 연결 부분) ---
   const fetchQuestions = useCallback(async () => {
@@ -99,6 +309,10 @@ export function InterviewAI() {
       if (questionTexts.length > 0) {
         setFetchedQuestions(questionTexts);
         setCurrentStep("preparation");
+        console.log("[InterviewAI] question-gen success:", {
+          count: questionTexts.length,
+          nextStep: "preparation"
+        });
       } else {
         setError("AI가 질문을 생성하지 못했습니다. 입력 정보를 확인해주세요.");
         setFetchedQuestions([]);
@@ -113,8 +327,11 @@ export function InterviewAI() {
   }, [majorInput, jobInput, resumeText]);
   // ----------------------------------------
     
-  // startInterview 함수를 fetchQuestions로 대체합니다.
-  const startInterview = fetchQuestions; 
+  const requestQuestions = fetchQuestions;
+  const handleStartInterview = () => {
+    if (!canStartInterview) return;
+    requestQuestions();
+  };
 
   // 녹음 시작 함수
   const startRecording = async () => {
@@ -244,6 +461,8 @@ export function InterviewAI() {
       
       mediaRecorder.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        console.log("[audio] blob size/type", audioBlob?.size, audioBlob?.type);
+        console.log("[audio] chunks len", audioChunksRef.current.length);
         audioChunksRef.current = [];
         
         // 스트림은 유지 (권한을 계속 유지하기 위해 트랙을 중지하지 않음)
@@ -267,13 +486,44 @@ export function InterviewAI() {
         setCurrentStep('main');
         return;
     }
-    
+
+    setError(null);
+    setIsUploading(true);
+    setInterviewIdSafe(null);
+    try {
+      const finalUserId = getUserId();
+      const jobApplied = jobInput || '면접';
+      const resumeContent = resumeText || '';
+      const startResponse = await startInterviewSession({
+        userId: finalUserId,
+        jobApplied,
+        resumeContent
+      });
+      const startedInterviewId = startResponse?.interviewId ?? startResponse?.id ?? null;
+      if (!startedInterviewId) {
+        setError("면접 세션을 시작하지 못했습니다. 서버 응답에 interviewId가 없습니다.");
+        console.warn("[InterviewAI] startInterview missing interviewId:", startResponse);
+        return;
+      }
+      setInterviewIdSafe(startedInterviewId);
+    } catch (err: any) {
+      console.error("면접 세션 시작 실패:", err);
+      setError(err?.message || "면접 세션을 시작하지 못했습니다.");
+      return;
+    } finally {
+      setIsUploading(false);
+    }
+
     setCurrentStep('interview');
     setCurrentQuestion(0);
     setTimeLeft(60);
     setAnswers([]);
-    setInterviewId(null);
+    setAnswerResults([]);
+    setInterviewSummary(null);
+    setAnalysisResult(null);
     setHasMicPermission(null); // 권한 상태 초기화
+    interviewStartAtRef.current = Date.now();
+    lastRecordedBlobRef.current = null;
     
     // 녹음 시작
     await startRecording();
@@ -299,19 +549,33 @@ export function InterviewAI() {
     if (timerRef.current) {
       clearInterval(timerRef.current);
     }
+
+    let shouldAdvance = true;
     
     // 마이크 권한이 있는 경우에만 녹음 종료 및 업로드
     if (hasMicPermission === true && mediaRecorderRef.current && audioStreamRef.current) {
       setIsUploading(true);
+      setError(null);
       try {
         // 녹음 종료
-        const audioBlob = await stopRecording();
+        let audioBlob = lastRecordedBlobRef.current;
+        if (!audioBlob) {
+          audioBlob = await stopRecording();
+          lastRecordedBlobRef.current = audioBlob;
+        }
         
         if (audioBlob.size > 0) {
+          console.log("[audio] blob size/type", audioBlob?.size, audioBlob?.type);
+          const activeInterviewId = interviewIdRef.current ?? interviewId;
+          if (!activeInterviewId) {
+            setError("면접 세션이 시작되지 않았습니다. 다시 시작해주세요.");
+            console.warn("[InterviewAI] meta.interviewId missing. Block submitInterviewAnswer.");
+            shouldAdvance = false;
+            return;
+          }
+
           // userId 가져오기
-          const userIdStr = localStorage.getItem('userId');
-          const userId = userIdStr ? parseInt(userIdStr, 10) : 1;
-          const finalUserId = isNaN(userId) ? 1 : userId;
+          const finalUserId = getUserId();
           
           // jobApplied 가져오기 (jobInput 사용)
           const jobApplied = jobInput || '면접';
@@ -325,14 +589,24 @@ export function InterviewAI() {
           
           // meta 객체 구성 (백엔드 스펙에 맞게)
           const meta = {
-            interviewId: interviewId ?? null,
+            interviewId: activeInterviewId,
             userId: finalUserId,
             questionId: currentQuestionId,
             questionText: currentQuestionText,
             resumeContent: resumeContent,
             jobApplied: jobApplied,
           };
-          
+
+          if (!interviewStartAtRef.current) {
+            interviewStartAtRef.current = Date.now();
+          }
+          const durationSec = Math.max(
+            1,
+            Math.floor((Date.now() - interviewStartAtRef.current) / 1000)
+          );
+          const safeDurationSec = Number.isFinite(durationSec) ? durationSec : 1;
+          console.log("[SEND] interviewDuration:", safeDurationSec);
+
           // 디버깅: 요청 전 로그
           console.log('[SEND] nextQuestion - 면접 답변 제출:', {
             meta: meta,
@@ -340,9 +614,18 @@ export function InterviewAI() {
             fileType: audioBlob.type || 'audio/webm',
             questionIndex: currentQuestion
           });
+
+          const formData = new FormData();
+          formData.set("file", audioBlob, "answer.webm");
+          formData.set("meta", JSON.stringify(meta));
+          formData.set("interviewDuration", String(safeDurationSec));
+          for (const [key, value] of formData.entries()) {
+            console.log("[FORMDATA]", key, value);
+          }
           
           // 백엔드로 답변 제출 (meta + file 동시 전송)
-          const response = await submitInterviewAnswer(meta, audioBlob);
+          const response = await submitInterviewAnswer(formData);
+          lastRecordedBlobRef.current = null;
           
           // 응답에서 result 추출: fullResponse가 있으면 그것을, 없으면 response 자체를 사용
           const result = response?.fullResponse || response;
@@ -363,11 +646,6 @@ export function InterviewAI() {
             rawResponse: response
           });
           
-          // 첫 번째 업로드 시 interviewId 저장 (응답에 id가 있는 경우)
-          if (!interviewId && response?.id) {
-            setInterviewId(response.id);
-          }
-          
           // 답변 저장 (STT 변환된 텍스트)
           const currentAnswerIndex = currentQuestion;
           const answerText = result?.transcript || '';
@@ -378,14 +656,19 @@ export function InterviewAI() {
           }
           
           // AnswerResult 객체 생성
+          const transcriptText =
+            typeof result?.transcript === "string" && result.transcript.trim()
+              ? result.transcript
+              : null;
           const answerResult: AnswerResult = {
-            transcript: result?.transcript || '',
-            score: result?.score ?? 0,
-            timeMs: result?.timeMs ?? 0,
-            fluency: result?.fluency ?? 0,
-            contentDepth: result?.contentDepth ?? 0,
-            structure: result?.structure ?? 0,
-            fillerCount: result?.fillerCount ?? 0,
+            transcript: transcriptText,
+            sttStatus: typeof result?.sttStatus === "string" ? result.sttStatus : null,
+            score: Number.isFinite(result?.score) ? result.score : null,
+            timeMs: Number.isFinite(result?.timeMs) ? result.timeMs : null,
+            fluency: Number.isFinite(result?.fluency) ? result.fluency : null,
+            contentDepth: Number.isFinite(result?.contentDepth) ? result.contentDepth : null,
+            structure: Number.isFinite(result?.structure) ? result.structure : null,
+            fillerCount: Number.isFinite(result?.fillerCount) ? result.fillerCount : null,
             improvements: Array.isArray(result?.improvements) ? result.improvements : [],
             strengths: Array.isArray(result?.strengths) ? result.strengths : [],
             risks: Array.isArray(result?.risks) ? result.risks : []
@@ -413,13 +696,14 @@ export function InterviewAI() {
             // 배열이 부족하면 빈 객체로 채움
             while (newResults.length < currentAnswerIndex) {
               newResults.push({
-                transcript: '',
-                score: 0,
-                timeMs: 0,
-                fluency: 0,
-                contentDepth: 0,
-                structure: 0,
-                fillerCount: 0,
+                transcript: null,
+                sttStatus: null,
+                score: null,
+                timeMs: null,
+                fluency: null,
+                contentDepth: null,
+                structure: null,
+                fillerCount: null,
                 improvements: [],
                 strengths: [],
                 risks: []
@@ -434,20 +718,13 @@ export function InterviewAI() {
             console.log('업데이트된 answerResults 배열:', newResults, '현재 인덱스:', currentAnswerIndex);
             return newResults;
           });
+        } else {
+          lastRecordedBlobRef.current = null;
         }
       } catch (err: any) {
         console.error('면접 답변 제출 실패:', err);
-        // 에러 메시지에서 불필요한 상세 정보 제거
-        const errorMessage = err.message || '알 수 없는 오류';
-        const shortMessage = errorMessage.includes('Data too long') 
-          ? '서버 저장 공간 부족으로 일부 데이터가 저장되지 않았습니다. 면접은 계속 진행됩니다.'
-          : errorMessage.includes('HTTP 500') 
-          ? '서버 오류가 발생했습니다. 면접은 계속 진행됩니다.'
-          : errorMessage;
-        
-        setError(`STT 또는 AI 분석 중 오류가 발생했습니다: ${shortMessage}`);
-        // 에러가 발생해도 다음 질문으로 넘어갈 수 있도록 alert는 제거하거나 간단하게
-        console.warn('⚠️ 면접 답변 제출 실패했지만 면접은 계속 진행됩니다.');
+        setError("음성 분석 중 오류가 발생했습니다. 다시 시도해주세요.");
+        shouldAdvance = false;
       } finally {
         setIsUploading(false);
       }
@@ -466,6 +743,10 @@ export function InterviewAI() {
       }
     }
 
+    if (!shouldAdvance) {
+      return;
+    }
+
     if (currentQuestion < questions.length - 1) {
       setCurrentQuestion(prev => prev + 1);
       setTimeLeft(60);
@@ -482,18 +763,32 @@ export function InterviewAI() {
   };
 
   const finishInterview = async () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    const activeInterviewId = interviewIdRef.current ?? interviewId;
+    if (!activeInterviewId) {
+      setError("면접 세션이 시작되지 않았습니다. 다시 시작해주세요.");
+      console.warn("[InterviewAI] finishInterview blocked: missing interviewId.");
+      return;
+    }
+    let shouldProceed = true;
     // 마이크 권한이 있고 녹음이 진행된 경우에만 업로드
     if (hasMicPermission === true && mediaRecorderRef.current && audioStreamRef.current) {
       setIsUploading(true);
+      setError(null);
       try {
         // 녹음 종료
-        const audioBlob = await stopRecording();
+        let audioBlob = lastRecordedBlobRef.current;
+        if (!audioBlob) {
+          audioBlob = await stopRecording();
+          lastRecordedBlobRef.current = audioBlob;
+        }
         
         if (audioBlob.size > 0) {
+          console.log("[audio] blob size/type", audioBlob?.size, audioBlob?.type);
           // userId 가져오기
-          const userIdStr = localStorage.getItem('userId');
-          const userId = userIdStr ? parseInt(userIdStr, 10) : 1;
-          const finalUserId = isNaN(userId) ? 1 : userId;
+          const finalUserId = getUserId();
           
           // jobApplied 가져오기
           const jobApplied = jobInput || '면접';
@@ -508,14 +803,24 @@ export function InterviewAI() {
           
           // meta 객체 구성 (백엔드 스펙에 맞게)
           const meta = {
-            interviewId: interviewId ?? null,
+            interviewId: activeInterviewId,
             userId: finalUserId,
             questionId: lastQuestionId,
             questionText: lastQuestionText,
             resumeContent: resumeContent,
             jobApplied: jobApplied,
           };
-          
+
+          if (!interviewStartAtRef.current) {
+            interviewStartAtRef.current = Date.now();
+          }
+          const durationSec = Math.max(
+            1,
+            Math.floor((Date.now() - interviewStartAtRef.current) / 1000)
+          );
+          const safeDurationSec = Number.isFinite(durationSec) ? durationSec : 1;
+          console.log("[SEND] interviewDuration:", safeDurationSec);
+
           // 디버깅: 요청 전 로그
           console.log('[SEND] finishInterview - 마지막 질문 답변 제출:', {
             meta: meta,
@@ -523,9 +828,18 @@ export function InterviewAI() {
             fileType: audioBlob.type || 'audio/webm',
             questionIndex: lastQuestionIndex
           });
+
+          const formData = new FormData();
+          formData.set("file", audioBlob, "answer.webm");
+          formData.set("meta", JSON.stringify(meta));
+          formData.set("interviewDuration", String(safeDurationSec));
+          for (const [key, value] of formData.entries()) {
+            console.log("[FORMDATA]", key, value);
+          }
           
           // 마지막 질문 답변 제출 (meta + file 동시 전송)
-          const response = await submitInterviewAnswer(meta, audioBlob);
+          const response = await submitInterviewAnswer(formData);
+          lastRecordedBlobRef.current = null;
           
           // 응답에서 result 추출: fullResponse가 있으면 그것을, 없으면 response 자체를 사용
           const result = response?.fullResponse || response;
@@ -545,26 +859,26 @@ export function InterviewAI() {
             fullResponse: response?.fullResponse,
             rawResponse: response
           });
-          
-          // interviewId 저장 (아직 없으면)
-          if (!interviewId && response?.id) {
-            setInterviewId(response.id);
-          }
-          
+
           // 마지막 답변 저장 (STT 변환된 텍스트)
           const answerText = result?.transcript || '';
           
           console.log('마지막 질문 답변 텍스트:', answerText || '(없음)', '인덱스:', lastQuestionIndex, '길이:', answerText?.length || 0);
           
           // AnswerResult 객체 생성
+          const transcriptText =
+            typeof result?.transcript === "string" && result.transcript.trim()
+              ? result.transcript
+              : null;
           const answerResult: AnswerResult = {
-            transcript: result?.transcript || '',
-            score: result?.score ?? 0,
-            timeMs: result?.timeMs ?? 0,
-            fluency: result?.fluency ?? 0,
-            contentDepth: result?.contentDepth ?? 0,
-            structure: result?.structure ?? 0,
-            fillerCount: result?.fillerCount ?? 0,
+            transcript: transcriptText,
+            sttStatus: typeof result?.sttStatus === "string" ? result.sttStatus : null,
+            score: Number.isFinite(result?.score) ? result.score : null,
+            timeMs: Number.isFinite(result?.timeMs) ? result.timeMs : null,
+            fluency: Number.isFinite(result?.fluency) ? result.fluency : null,
+            contentDepth: Number.isFinite(result?.contentDepth) ? result.contentDepth : null,
+            structure: Number.isFinite(result?.structure) ? result.structure : null,
+            fillerCount: Number.isFinite(result?.fillerCount) ? result.fillerCount : null,
             improvements: Array.isArray(result?.improvements) ? result.improvements : [],
             strengths: Array.isArray(result?.strengths) ? result.strengths : [],
             risks: Array.isArray(result?.risks) ? result.risks : []
@@ -592,13 +906,14 @@ export function InterviewAI() {
             // 배열이 부족하면 빈 객체로 채움
             while (newResults.length < lastQuestionIndex) {
               newResults.push({
-                transcript: '',
-                score: 0,
-                timeMs: 0,
-                fluency: 0,
-                contentDepth: 0,
-                structure: 0,
-                fillerCount: 0,
+                transcript: null,
+                sttStatus: null,
+                score: null,
+                timeMs: null,
+                fluency: null,
+                contentDepth: null,
+                structure: null,
+                fillerCount: null,
                 improvements: [],
                 strengths: [],
                 risks: []
@@ -617,20 +932,13 @@ export function InterviewAI() {
           // 마지막 답변의 분석 결과를 전체 분석 결과로도 저장 (기존 호환성 유지)
           setAnalysisResult(answerResult);
           console.log('[SAVE] 마지막 답변 분석 결과 저장:', answerResult);
+        } else {
+          lastRecordedBlobRef.current = null;
         }
       } catch (err: any) {
         console.error('마지막 면접 답변 제출 실패:', err);
-        // 에러 메시지에서 불필요한 상세 정보 제거
-        const errorMessage = err.message || '알 수 없는 오류';
-        const shortMessage = errorMessage.includes('Data too long') 
-          ? '서버 저장 공간 부족으로 일부 데이터가 저장되지 않았습니다.'
-          : errorMessage.includes('HTTP 500') 
-          ? '서버 오류가 발생했습니다.'
-          : errorMessage;
-        
-        setError(`STT 또는 AI 분석 중 오류가 발생했습니다: ${shortMessage}`);
-        // 에러가 발생해도 분석 화면으로 넘어갈 수 있도록 alert는 제거
-        console.warn('⚠️ 마지막 면접 답변 제출 실패했지만 분석 화면으로 이동합니다.');
+        setError("음성 분석 중 오류가 발생했습니다. 다시 시도해주세요.");
+        shouldProceed = false;
       } finally {
         setIsUploading(false);
       }
@@ -649,6 +957,43 @@ export function InterviewAI() {
       if (currentQuestion === questions.length - 1 && answers.length < questions.length) {
         setAnswers(prevAnswers => [...prevAnswers, '']);
       }
+    }
+
+    if (!shouldProceed) {
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      if (!interviewStartAtRef.current) {
+        setError("총 진행 시간 계산에 실패했습니다. 면접을 다시 시작해주세요.");
+        console.warn("[InterviewAI] interviewStartAtRef missing, cannot finalize.");
+        return;
+      }
+      const totalDurationSec = Math.max(
+        1,
+        Math.floor((Date.now() - interviewStartAtRef.current) / 1000)
+      );
+      const finalizeData = await finalizeInterview({
+        interviewId: activeInterviewId,
+        totalDurationSec
+      });
+      if (finalizeData?.summary || finalizeData?.answers) {
+        applyInterviewDetail(finalizeData);
+      } else {
+        const detail = await getInterviewDetail(activeInterviewId);
+        applyInterviewDetail(detail);
+      }
+      setAnalysisResult(null);
+      window.dispatchEvent(new CustomEvent("feedback:interview:created", {
+        detail: { id: activeInterviewId }
+      }));
+    } catch (err: any) {
+      console.error("면접 finalize 실패:", err);
+      setError(err?.message || "면접 결과를 확정하지 못했습니다.");
+      return;
+    } finally {
+      setIsUploading(false);
     }
 
     // 면접 종료 시에만 스트림 정리 (권한은 유지)
@@ -695,16 +1040,52 @@ export function InterviewAI() {
     setIsRecording(false);
     setTimeLeft(60);
     setAnswers([]);
+    setAnswerResults([]);
     setFetchedQuestions([]); 
     setAnalysisProgress(0);
     setError(null);
     setIsUploading(false);
-    setInterviewId(null);
+    setInterviewIdSafe(null);
+    setInterviewSummary(null);
+    setAnalysisResult(null);
     setHasMicPermission(null); // 권한 상태 초기화
+    interviewStartAtRef.current = null;
+    lastRecordedBlobRef.current = null;
     if (timerRef.current) {
       clearInterval(timerRef.current);
     }
   };
+
+  useEffect(() => {
+    if (currentStep !== 'preparation') return;
+    let isActive = true;
+
+    const checkMicReady = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const hasAudioInput = devices.some((device) => device.kind === 'audioinput');
+        if (!isActive) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        setMicPermission('granted');
+        setMicConnected(hasAudioInput);
+        stream.getTracks().forEach((track) => track.stop());
+      } catch (err: any) {
+        if (!isActive) return;
+        const isDenied =
+          err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
+        setMicPermission(isDenied ? 'denied' : 'prompt');
+        setMicConnected(false);
+      }
+    };
+
+    checkMicReady();
+    return () => {
+      isActive = false;
+    };
+  }, [currentStep]);
     
   // 컴포넌트 언마운트 시 정리
   useEffect(() => {
@@ -735,8 +1116,16 @@ export function InterviewAI() {
           <p className="text-muted-foreground">면접을 시작하기 전에 마이크를 체크해주세요</p>
           <div className="bg-primary/10 text-primary p-3 rounded-lg border border-primary/30">
             <h4 className="font-medium">면접 질문 ({questions.length}개)</h4>
-            <ul className="list-disc ml-5 text-sm space-y-1 mt-1">
-                {questions.map((q, i) => <li key={i}>{q}</li>)}
+            <ul className="list-none ml-0 text-sm space-y-1 mt-1">
+              {questions.map((q, i) => {
+                const cleaned = q.replace(/^[\s•\-–—]+/, "");
+                return (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="mt-[2px]">•</span>
+                    <span>{cleaned}</span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         </div>
@@ -759,10 +1148,23 @@ export function InterviewAI() {
                   <Mic className="w-5 h-5 text-primary" />
                   <span>마이크</span>
                 </div>
-                <div className="flex items-center gap-2 text-green-600">
-                  <Check className="w-4 h-4" />
-                  <span className="text-sm">연결됨</span>
-                </div>
+                {micConnected ? (
+                  <div className="flex items-center gap-2 text-green-600">
+                    <Check className="w-4 h-4" />
+                    <span className="text-sm">연결됨</span>
+                  </div>
+                ) : (
+                  <div
+                    className={`flex items-center gap-2 ${
+                      micPermission === 'denied' ? 'text-red-600' : 'text-muted-foreground'
+                    }`}
+                  >
+                    <span className="text-sm">❌</span>
+                    <span className="text-sm">
+                      {micPermission === 'denied' ? '권한 필요' : '연결 안됨'}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -771,6 +1173,7 @@ export function InterviewAI() {
               <ul className="text-blue-800 space-y-1">
                 <li>• 조용한 환경에서 진행해주세요</li>
                 <li>• 마이크에 가까이서 명확하게 답변해주세요</li>
+                <li>• 마이크 아이콘이 빨간색(REC)으로 바뀌면 답변을 시작하세요.</li>
                 <li>• 각 질문당 1분의 답변 시간이 주어집니다</li>
               </ul>
             </div>
@@ -942,13 +1345,95 @@ export function InterviewAI() {
 
     
   if (currentStep === 'result') {
+    const resultAnswers = Array.isArray(answerResults) ? answerResults : [];
+    const totalMsFromAnswers = resultAnswers.reduce((sum, result) => {
+      const value = result?.timeMs;
+      return Number.isFinite(value) ? sum + (value as number) : sum;
+    }, 0);
+    const summaryDurationSec = interviewSummary?.totalDurationSec;
+    const totalMsFromSummary =
+      Number.isFinite(summaryDurationSec) && summaryDurationSec > 0
+        ? summaryDurationSec * 1000
+        : null;
+    const totalMs = totalMsFromSummary ?? totalMsFromAnswers;
+    const formatDuration = (ms: number | null) => {
+      if (!ms || ms <= 0) return "데이터 없음";
+      const totalSeconds = Math.floor(ms / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${minutes}분 ${seconds}초`;
+    };
+    const scoredResults = resultAnswers.filter((result) =>
+      Number.isFinite(result?.score)
+    );
+    const averageScoreFromAnswers =
+      scoredResults.length > 0
+        ? scoredResults.reduce((sum, result) => sum + (result.score as number), 0) /
+          scoredResults.length
+        : null;
+    const averageScore =
+      Number.isFinite(interviewSummary?.averageScore)
+        ? interviewSummary.averageScore
+        : averageScoreFromAnswers;
+    const questionCount =
+      Number.isFinite(interviewSummary?.questionCount) && interviewSummary.questionCount > 0
+        ? interviewSummary.questionCount
+        : resultAnswers.length > 0
+          ? resultAnswers.length
+          : questions.length;
+    const interviewTitle =
+      typeof interviewSummary?.title === "string" && interviewSummary.title.trim()
+        ? interviewSummary.title.trim()
+        : "면접";
+    const interviewCreatedAt = interviewSummary?.createdAt || "";
+
     return (
       <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleGoToProfile}
+            className="flex items-center gap-2"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            뒤로가기
+          </Button>
+        </div>
         <div className="space-y-2">
           <h1 className="text-primary flex items-center gap-2">
             <Star className="w-8 h-8" />
             면접 결과
           </h1>
+          <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+            {isEditingTitle ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  className="h-8 w-64"
+                  maxLength={50}
+                />
+                <Button size="sm" onClick={handleSaveTitle} disabled={isSavingTitle}>
+                  {isSavingTitle ? "저장 중..." : "저장"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleCancelTitleEdit} disabled={isSavingTitle}>
+                  취소
+                </Button>
+              </div>
+            ) : (
+              <>
+                <span>{interviewTitle}</span>
+                {interviewCreatedAt ? <span>· {interviewCreatedAt}</span> : null}
+                <Button size="sm" variant="ghost" onClick={handleEditTitle}>
+                  수정
+                </Button>
+              </>
+            )}
+          </div>
+          {titleError && (
+            <p className="text-sm text-red-600">{titleError}</p>
+          )}
           <p className="text-muted-foreground">AI 분석 결과를 확인해보세요</p>
         </div>
 
@@ -960,7 +1445,9 @@ export function InterviewAI() {
                 <Clock className="w-6 h-6 text-blue-600" />
               </div>
               <div className="space-y-1">
-                <p className="text-2xl font-bold text-primary">6분 20초</p>
+                <p className="text-2xl font-bold text-primary">
+                  {formatDuration(totalMs)}
+                </p>
                 <p className="text-muted-foreground">총 진행 시간</p>
               </div>
             </CardContent>
@@ -972,7 +1459,7 @@ export function InterviewAI() {
                 <MessageCircle className="w-6 h-6 text-green-600" />
               </div>
               <div className="space-y-1">
-                <p className="text-2xl font-bold text-primary">{questions.length}개</p> 
+                <p className="text-2xl font-bold text-primary">{questionCount}개</p> 
                 <p className="text-muted-foreground">총 질문 개수</p>
               </div>
             </CardContent>
@@ -984,7 +1471,9 @@ export function InterviewAI() {
                 <Star className="w-6 h-6 text-purple-600" />
               </div>
               <div className="space-y-1">
-                <p className="text-2xl font-bold text-primary">87.5점</p>
+                <p className="text-2xl font-bold text-primary">
+                  {averageScore !== null ? `${averageScore.toFixed(1)}점` : "데이터 없음"}
+                </p>
                 <p className="text-muted-foreground">평균 점수</p>
               </div>
             </CardContent>
@@ -1043,13 +1532,33 @@ export function InterviewAI() {
           <CardContent className="space-y-4">
             {questions.map((question, index) => {
               const result = answerResults[index];
+              const transcriptValue = result?.transcript ?? null;
+              const isSttFailed =
+                transcriptValue === null || result?.sttStatus === "FAILED";
+              const timeMs = result?.timeMs;
+              const timeText = Number.isFinite(timeMs)
+                ? `${Math.floor((timeMs as number) / 1000)}초`
+                : "데이터 없음";
+              const scoreText = Number.isFinite(result?.score)
+                ? `${result?.score}점`
+                : "데이터 없음";
+              const fluencyScore = Number.isFinite(result?.fluency) ? result?.fluency : null;
+              const contentDepthScore = Number.isFinite(result?.contentDepth) ? result?.contentDepth : null;
+              const structureScore = Number.isFinite(result?.structure) ? result?.structure : null;
+              const fillerCount = Number.isFinite(result?.fillerCount) ? result?.fillerCount : null;
+              const hasScoreMetrics =
+                Number.isFinite(result?.score) ||
+                fluencyScore !== null ||
+                contentDepthScore !== null ||
+                structureScore !== null ||
+                fillerCount !== null;
               return (
                 <div key={index} className="border rounded-lg p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="font-medium">질문 {index + 1}</h4>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      <span>답변 시간: {result?.timeMs ? `${Math.floor(result.timeMs / 1000)}초` : 'N/A'}</span>
-                      <span className="font-medium text-primary">{result?.score ?? 0}점</span>
+                      <span>답변 시간: {timeText}</span>
+                      <span className="font-medium text-primary">{scoreText}</span>
                     </div>
                   </div>
                   <p className="text-muted-foreground">{question}</p>
@@ -1057,37 +1566,35 @@ export function InterviewAI() {
                   {/* 답변 내용 (transcript) */}
                   <div className="bg-muted/50 p-3 rounded border-l-4 border-muted-foreground/20">
                     <p className="text-muted-foreground">
-                      {result?.transcript && result.transcript.trim() ? (
-                        <span className="italic">답변 내용: {result.transcript}</span>
-                      ) : answers[index] && answers[index].trim() ? (
-                        <span className="italic">답변 내용: {answers[index]}</span>
+                      {isSttFailed ? (
+                        <span className="text-muted-foreground/70">음성 인식에 실패했습니다. 다시 답변해 주세요.</span>
                       ) : (
-                        <span className="text-muted-foreground/70">답변 내용이 없습니다. (STT 변환 중이거나 오류가 발생했을 수 있습니다)</span>
+                        <span className="italic">답변 내용: {transcriptValue}</span>
                       )}
                     </p>
                   </div>
                   
                   {/* 점수 정보 */}
-                  {result && (result.score !== undefined || result.fluency !== undefined || result.contentDepth !== undefined || result.structure !== undefined) && (
+                  {result && hasScoreMetrics && (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-                      {result.fluency !== undefined && (
+                      {fluencyScore !== null && (
                         <div className="bg-green-50 p-2 rounded">
-                          <p className="text-green-700 font-medium">유창성: {result.fluency}점</p>
+                          <p className="text-green-700 font-medium">유창성: {fluencyScore}점</p>
                         </div>
                       )}
-                      {result.contentDepth !== undefined && (
+                      {contentDepthScore !== null && (
                         <div className="bg-blue-50 p-2 rounded">
-                          <p className="text-blue-700 font-medium">내용 깊이: {result.contentDepth}점</p>
+                          <p className="text-blue-700 font-medium">내용 깊이: {contentDepthScore}점</p>
                         </div>
                       )}
-                      {result.structure !== undefined && (
+                      {structureScore !== null && (
                         <div className="bg-purple-50 p-2 rounded">
-                          <p className="text-purple-700 font-medium">구조: {result.structure}점</p>
+                          <p className="text-purple-700 font-medium">구조: {structureScore}점</p>
                         </div>
                       )}
-                      {result.fillerCount !== undefined && (
+                      {fillerCount !== null && (
                         <div className="bg-yellow-50 p-2 rounded">
-                          <p className="text-yellow-700 font-medium">끼어들기: {result.fillerCount}회</p>
+                          <p className="text-yellow-700 font-medium">끼어들기: {fillerCount}회</p>
                         </div>
                       )}
                     </div>
@@ -1099,7 +1606,7 @@ export function InterviewAI() {
                       <p className="text-green-700 font-medium mb-2">💪 주요 강점</p>
                       <ul className="text-gray-700 space-y-1">
                         {result.strengths.map((strength: string, idx: number) => (
-                          <li key={idx}>• {strength}</li>
+                          <li key={idx}>• {String(strength)}</li>
                         ))}
                       </ul>
                     </div>
@@ -1111,7 +1618,7 @@ export function InterviewAI() {
                       <p className="text-blue-700 font-medium mb-2">🎯 개선 포인트</p>
                       <ul className="text-gray-700 space-y-1">
                         {result.improvements.map((improvement: string, idx: number) => (
-                          <li key={idx}>• {improvement}</li>
+                          <li key={idx}>• {String(improvement)}</li>
                         ))}
                       </ul>
                     </div>
@@ -1123,7 +1630,7 @@ export function InterviewAI() {
                       <p className="text-yellow-700 font-medium mb-2">⚠️ 주의 사항</p>
                       <ul className="text-gray-700 space-y-1">
                         {result.risks.map((risk: string, idx: number) => (
-                          <li key={idx}>• {risk}</li>
+                          <li key={idx}>• {String(risk)}</li>
                         ))}
                       </ul>
                     </div>
@@ -1150,32 +1657,52 @@ export function InterviewAI() {
             {(() => {
               // answerResults에서 평균 점수 계산 또는 마지막 결과 사용
               const lastResult = answerResults.length > 0 ? answerResults[answerResults.length - 1] : null;
+              const averageOf = (items: AnswerResult[], key: keyof AnswerResult) => {
+                const values = items
+                  .map((item) => item?.[key])
+                  .filter((value) => Number.isFinite(value)) as number[];
+                if (values.length === 0) return null;
+                return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+              };
               const avgResult = answerResults.length > 0 ? {
-                score: Math.round(answerResults.reduce((sum, r) => sum + (r.score || 0), 0) / answerResults.length),
-                fluency: Math.round(answerResults.reduce((sum, r) => sum + (r.fluency || 0), 0) / answerResults.length),
-                contentDepth: Math.round(answerResults.reduce((sum, r) => sum + (r.contentDepth || 0), 0) / answerResults.length),
-                structure: Math.round(answerResults.reduce((sum, r) => sum + (r.structure || 0), 0) / answerResults.length),
+                score: averageOf(answerResults, "score"),
+                fluency: averageOf(answerResults, "fluency"),
+                contentDepth: averageOf(answerResults, "contentDepth"),
+                structure: averageOf(answerResults, "structure"),
               } : null;
               
               const displayResult = lastResult || analysisResult || avgResult;
-              
-              return displayResult && (displayResult.score !== undefined || displayResult.fluency !== undefined || displayResult.contentDepth !== undefined || displayResult.structure !== undefined) ? (
+              const hasDisplayMetrics =
+                Number.isFinite(displayResult?.score) ||
+                Number.isFinite(displayResult?.fluency) ||
+                Number.isFinite(displayResult?.contentDepth) ||
+                Number.isFinite(displayResult?.structure);
+
+              return displayResult && hasDisplayMetrics ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
                     <p className="text-sm text-muted-foreground mb-1">종합 점수</p>
-                    <p className="text-2xl font-bold text-primary">{displayResult.score ?? 0}점</p>
+                    <p className="text-2xl font-bold text-primary">
+                      {Number.isFinite(displayResult?.score) ? `${displayResult.score}점` : "데이터 없음"}
+                    </p>
                   </div>
                   <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
                     <p className="text-sm text-muted-foreground mb-1">유창성</p>
-                    <p className="text-2xl font-bold text-green-600">{displayResult.fluency ?? 0}점</p>
+                    <p className="text-2xl font-bold text-green-600">
+                      {Number.isFinite(displayResult?.fluency) ? `${displayResult.fluency}점` : "데이터 없음"}
+                    </p>
                   </div>
                   <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
                     <p className="text-sm text-muted-foreground mb-1">내용 깊이</p>
-                    <p className="text-2xl font-bold text-blue-600">{displayResult.contentDepth ?? 0}점</p>
+                    <p className="text-2xl font-bold text-blue-600">
+                      {Number.isFinite(displayResult?.contentDepth) ? `${displayResult.contentDepth}점` : "데이터 없음"}
+                    </p>
                   </div>
                   <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
                     <p className="text-sm text-muted-foreground mb-1">구조</p>
-                    <p className="text-2xl font-bold text-purple-600">{displayResult.structure ?? 0}점</p>
+                    <p className="text-2xl font-bold text-purple-600">
+                      {Number.isFinite(displayResult?.structure) ? `${displayResult.structure}점` : "데이터 없음"}
+                    </p>
                   </div>
                 </div>
               ) : null;
@@ -1184,11 +1711,12 @@ export function InterviewAI() {
             {/* 전체 전사본 (transcript) - answerResults의 모든 transcript 합치기 */}
             {(() => {
               const allTranscripts = answerResults
+                .filter(r => r?.sttStatus !== "FAILED")
                 .map(r => r?.transcript)
                 .filter(t => t && t.trim())
                 .join('\n\n');
               
-              return allTranscripts || analysisResult?.transcript ? (
+              return (
                 <div className="bg-white/70 p-4 rounded-lg border border-primary/20">
                   <div className="flex items-start gap-3">
                     <div className="p-2 bg-primary/10 rounded-full mt-1">
@@ -1197,12 +1725,12 @@ export function InterviewAI() {
                     <div className="space-y-2 flex-1">
                       <p className="text-primary font-medium">📝 전체 답변 전사본</p>
                       <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
-                        {allTranscripts || analysisResult?.transcript || ''}
+                        {allTranscripts || "음성 인식에 실패했습니다. 다시 답변해 주세요."}
                       </p>
                     </div>
                   </div>
                 </div>
-              ) : null;
+              );
             })()}
 
             {/* 주요 강점 - answerResults의 모든 strengths 합치기 */}
@@ -1221,7 +1749,7 @@ export function InterviewAI() {
                       <p className="text-green-700 font-medium">💪 주요 강점</p>
                       <ul className="text-gray-700 leading-relaxed space-y-1">
                         {(allStrengths.length > 0 ? allStrengths : analysisResult?.strengths || []).map((strength: string, idx: number) => (
-                          <li key={idx}>• {strength}</li>
+                          <li key={idx}>• {String(strength)}</li>
                         ))}
                       </ul>
                     </div>
@@ -1246,7 +1774,7 @@ export function InterviewAI() {
                       <p className="text-blue-700 font-medium">🎯 개선 포인트</p>
                       <ul className="text-gray-700 leading-relaxed space-y-1">
                         {(allImprovements.length > 0 ? allImprovements : analysisResult?.improvements || []).map((improvement: string, idx: number) => (
-                          <li key={idx}>• {improvement}</li>
+                          <li key={idx}>• {String(improvement)}</li>
                         ))}
                       </ul>
                     </div>
@@ -1271,7 +1799,7 @@ export function InterviewAI() {
                       <p className="text-yellow-700 font-medium">⚠️ 주의 사항</p>
                       <ul className="text-gray-700 leading-relaxed space-y-1">
                         {(allRisks.length > 0 ? allRisks : analysisResult?.risks || []).map((risk: string, idx: number) => (
-                          <li key={idx}>• {risk}</li>
+                          <li key={idx}>• {String(risk)}</li>
                         ))}
                       </ul>
                     </div>
@@ -1296,10 +1824,7 @@ export function InterviewAI() {
           <Button size="lg" className="px-8" onClick={resetInterview}>
             새 면접 시작
           </Button>
-          <Button variant="outline" size="lg" className="px-8">
-            결과 다운로드
-          </Button>
-          <Button variant="ghost" className="text-primary">
+          <Button variant="ghost" className="text-primary" onClick={handleGoToProfile}>
             학습 프로필로 이동
           </Button>
         </div>
@@ -1421,23 +1946,18 @@ export function InterviewAI() {
             <div className="w-24 h-24 bg-gray-300 rounded-full mx-auto mb-4 flex items-center justify-center">
               <Mic className="h-12 w-12 text-gray-500" />
             </div>
-            <p className="text-gray-600 mb-4">마이크 준비가 완료되면 면접을 시작할 수 있습니다</p>
             <div className="flex justify-center space-x-4">
               <Button 
                 size="lg" 
                 className="px-8" 
-                onClick={startInterview}
-                disabled={isLoading || !majorInput.trim() || !jobInput.trim()} 
+                onClick={handleStartInterview}
+                disabled={isLoading || !majorInput.trim() || !jobInput.trim() || !canStartInterview} 
               >
                 {isLoading ? (
                     <><Loader className="mr-2 h-4 w-4 animate-spin" /> 질문 생성 중...</>
                 ) : (
                     <><Play className="mr-2 h-4 w-4" /> 면접 시작</>
                 )}
-              </Button>
-              <Button variant="outline" size="lg" className="px-8">
-                <Settings className="mr-2 h-4 w-4" />
-                설정
               </Button>
             </div>
           </div>
@@ -1470,6 +1990,11 @@ export function InterviewAI() {
               rows={22}
               className="resize-none"
             />
+            {!canStartInterview && (
+              <p className="text-sm text-muted-foreground">
+                자기소개서를 입력하면 면접을 시작할 수 있어요.
+              </p>
+            )}
           </div>
           {resumeText.trim() && (
             <div className="bg-green-50 p-6 rounded-lg border border-green-200">
@@ -1485,31 +2010,6 @@ export function InterviewAI() {
         </CardContent>
       </Card>
 
-      
-      <Card>
-        <CardHeader>
-          <CardTitle>최근 면접 기록</CardTitle>
-          <CardDescription>이전 모의면접 결과를 확인하고 개선점을 파악해보세요</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between p-4 border rounded-lg">
-              <div>
-                <h4 className="font-medium">기본 면접 - 2024.01.15</h4>
-                <p className="text-sm text-muted-foreground">전체 점수: 85점 · 소요시간: 12분</p>
-              </div>
-              <Button variant="outline" size="sm">결과 보기</Button>
-            </div>
-            <div className="flex items-center justify-between p-4 border rounded-lg">
-              <div>
-                <h4 className="font-medium">IT 직무 면접 - 2024.01.12</h4>
-                <p className="text-sm text-muted-foreground">전체 점수: 78점 · 소요시간: 15분</p>
-              </div>
-              <Button variant="outline" size="sm">결과 보기</Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

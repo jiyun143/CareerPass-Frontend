@@ -64,26 +64,9 @@ export default function App() {
     return <AuthCallback />;
   }
 
-  const isProfileComplete =
-    me?.profileCompleted === true
-      ? true
-      : me?.profileCompleted === false
-        ? false
-        : !!me && !!me.nickname && !!me.major && !!me.targetJob;
-
   const handlePageChange = (page: PageType) => {
     if (page !== "main" && !isLoggedIn) {
       setCurrentPage("login-required" as PageType);
-      return;
-    }
-
-    if (
-      page !== "main" &&
-      page !== "profile" &&
-      isLoggedIn &&
-      !isProfileComplete
-    ) {
-      setCurrentPage("profile" as PageType);
       return;
     }
 
