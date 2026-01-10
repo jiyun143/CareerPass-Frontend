@@ -1535,29 +1535,16 @@ export function InterviewAI({
               const transcriptValue = result?.transcript ?? null;
               const isSttFailed =
                 transcriptValue === null || result?.sttStatus === "FAILED";
-              const timeMs = result?.timeMs;
-              const timeText = Number.isFinite(timeMs)
-                ? `${Math.floor((timeMs as number) / 1000)}초`
-                : "데이터 없음";
               const scoreText = Number.isFinite(result?.score)
                 ? `${result?.score}점`
                 : "데이터 없음";
-              const fluencyScore = Number.isFinite(result?.fluency) ? result?.fluency : null;
-              const contentDepthScore = Number.isFinite(result?.contentDepth) ? result?.contentDepth : null;
-              const structureScore = Number.isFinite(result?.structure) ? result?.structure : null;
               const fillerCount = Number.isFinite(result?.fillerCount) ? result?.fillerCount : null;
-              const hasScoreMetrics =
-                Number.isFinite(result?.score) ||
-                fluencyScore !== null ||
-                contentDepthScore !== null ||
-                structureScore !== null ||
-                fillerCount !== null;
+              const hasExtraMetrics = fillerCount !== null;
               return (
                 <div key={index} className="border rounded-lg p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="font-medium">질문 {index + 1}</h4>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      <span>답변 시간: {timeText}</span>
                       <span className="font-medium text-primary">{scoreText}</span>
                     </div>
                   </div>
@@ -1575,28 +1562,11 @@ export function InterviewAI({
                   </div>
                   
                   {/* 점수 정보 */}
-                  {result && hasScoreMetrics && (
+                  {result && hasExtraMetrics && (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-                      {fluencyScore !== null && (
-                        <div className="bg-green-50 p-2 rounded">
-                          <p className="text-green-700 font-medium">유창성: {fluencyScore}점</p>
-                        </div>
-                      )}
-                      {contentDepthScore !== null && (
-                        <div className="bg-blue-50 p-2 rounded">
-                          <p className="text-blue-700 font-medium">내용 깊이: {contentDepthScore}점</p>
-                        </div>
-                      )}
-                      {structureScore !== null && (
-                        <div className="bg-purple-50 p-2 rounded">
-                          <p className="text-purple-700 font-medium">구조: {structureScore}점</p>
-                        </div>
-                      )}
-                      {fillerCount !== null && (
-                        <div className="bg-yellow-50 p-2 rounded">
-                          <p className="text-yellow-700 font-medium">끼어들기: {fillerCount}회</p>
-                        </div>
-                      )}
+                      <div className="bg-yellow-50 p-2 rounded">
+                        <p className="text-yellow-700 font-medium">끼어들기: {fillerCount}회</p>
+                      </div>
                     </div>
                   )}
                   
@@ -1664,73 +1634,27 @@ export function InterviewAI({
                 if (values.length === 0) return null;
                 return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
               };
-              const avgResult = answerResults.length > 0 ? {
-                score: averageOf(answerResults, "score"),
-                fluency: averageOf(answerResults, "fluency"),
-                contentDepth: averageOf(answerResults, "contentDepth"),
-                structure: averageOf(answerResults, "structure"),
-              } : null;
-              
-              const displayResult = lastResult || analysisResult || avgResult;
-              const hasDisplayMetrics =
-                Number.isFinite(displayResult?.score) ||
-                Number.isFinite(displayResult?.fluency) ||
-                Number.isFinite(displayResult?.contentDepth) ||
-                Number.isFinite(displayResult?.structure);
+              const avgScore = answerResults.length > 0 ? averageOf(answerResults, "score") : null;
+              const summaryScore = Number.isFinite(interviewSummary?.averageScore)
+                ? interviewSummary.averageScore
+                : null;
+              const displayScore = [
+                summaryScore,
+                lastResult?.score,
+                analysisResult?.score,
+                avgScore
+              ].find((value) => Number.isFinite(value)) as number | undefined;
 
-              return displayResult && hasDisplayMetrics ? (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              return Number.isFinite(displayScore) ? (
+                <div className="grid grid-cols-1 gap-4 mb-4">
                   <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
                     <p className="text-sm text-muted-foreground mb-1">종합 점수</p>
                     <p className="text-2xl font-bold text-primary">
-                      {Number.isFinite(displayResult?.score) ? `${displayResult.score}점` : "데이터 없음"}
-                    </p>
-                  </div>
-                  <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
-                    <p className="text-sm text-muted-foreground mb-1">유창성</p>
-                    <p className="text-2xl font-bold text-green-600">
-                      {Number.isFinite(displayResult?.fluency) ? `${displayResult.fluency}점` : "데이터 없음"}
-                    </p>
-                  </div>
-                  <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
-                    <p className="text-sm text-muted-foreground mb-1">내용 깊이</p>
-                    <p className="text-2xl font-bold text-blue-600">
-                      {Number.isFinite(displayResult?.contentDepth) ? `${displayResult.contentDepth}점` : "데이터 없음"}
-                    </p>
-                  </div>
-                  <div className="bg-white/70 p-4 rounded-lg border border-primary/20 text-center">
-                    <p className="text-sm text-muted-foreground mb-1">구조</p>
-                    <p className="text-2xl font-bold text-purple-600">
-                      {Number.isFinite(displayResult?.structure) ? `${displayResult.structure}점` : "데이터 없음"}
+                      {`${displayScore}점`}
                     </p>
                   </div>
                 </div>
               ) : null;
-            })()}
-
-            {/* 전체 전사본 (transcript) - answerResults의 모든 transcript 합치기 */}
-            {(() => {
-              const allTranscripts = answerResults
-                .filter(r => r?.sttStatus !== "FAILED")
-                .map(r => r?.transcript)
-                .filter(t => t && t.trim())
-                .join('\n\n');
-              
-              return (
-                <div className="bg-white/70 p-4 rounded-lg border border-primary/20">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 bg-primary/10 rounded-full mt-1">
-                      <FileText className="w-4 h-4 text-primary" />
-                    </div>
-                    <div className="space-y-2 flex-1">
-                      <p className="text-primary font-medium">📝 전체 답변 전사본</p>
-                      <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
-                        {allTranscripts || "음성 인식에 실패했습니다. 다시 답변해 주세요."}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              );
             })()}
 
             {/* 주요 강점 - answerResults의 모든 strengths 합치기 */}
