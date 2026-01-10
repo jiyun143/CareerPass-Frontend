@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
+import { AuthCallback } from "./AuthCallback";
 import { CareerPassLanding } from "./components/CareerPassLanding";
 import { CareerPackApp } from "./components/CareerPackApp";
 import { LoginPage } from "./components/LoginPage";
 import { LoginRequired } from "./components/LoginRequired";
 import { ProfileRequired } from "./components/ProfileRequired";
-import { getMe } from "./api";
+import fetchApi, { getMe } from "./api";
+import { clearAccessToken } from "./authToken";
 
 type PageType = "main" | "roadmap" | "resume" | "interview" | "profile";
 
@@ -13,14 +15,36 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
   const [me, setMe] = useState<any>(null);
   const [showLogin, setShowLogin] = useState(false);
+  const isAuthCallback =
+    typeof window !== "undefined" &&
+    window.location.pathname.startsWith("/auth/callback");
+
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.log("[debug] VITE_API_BASE_URL", import.meta.env.VITE_API_BASE_URL);
+    }
+  }, []);
 
   // 🔑 앱 시작 시 로그인 상태 확인 (/me)
   useEffect(() => {
+    if (isAuthCallback) return;
+
     const fetchMe = async () => {
       try {
-        const res = await getMe(); // credentials: include 필수
+        const res = await getMe();
+        if (import.meta.env.DEV) {
+          console.log("[debug] /me success", res);
+        }
         setMe(res);
         setIsLoggedIn(true);
+        setShowLogin(false);
+        setCurrentPage("profile");
+        if (import.meta.env.DEV) {
+          console.log(
+            "[debug] landing page set",
+            { profileCompleted: res?.profileCompleted, page: "profile" }
+          );
+        }
       } catch {
         setMe(null);
         setIsLoggedIn(false);
@@ -28,29 +52,21 @@ export default function App() {
     };
 
     fetchMe();
-  }, []);
+  }, [isAuthCallback]);
 
   // 로그인 상태 아직 모르면 로딩 상태
   if (isLoggedIn === null) {
+    if (isAuthCallback) return <AuthCallback />;
     return null; // 필요하면 로딩 컴포넌트
   }
 
-  const isProfileComplete =
-    !!me && !!me.nickname && !!me.major && !!me.targetJob;
+  if (isAuthCallback) {
+    return <AuthCallback />;
+  }
 
   const handlePageChange = (page: PageType) => {
     if (page !== "main" && !isLoggedIn) {
       setCurrentPage("login-required" as PageType);
-      return;
-    }
-
-    if (
-      page !== "main" &&
-      page !== "profile" &&
-      isLoggedIn &&
-      !isProfileComplete
-    ) {
-      setCurrentPage("profile-required" as PageType);
       return;
     }
 
@@ -68,12 +84,10 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch("https://careerpass.duckdns.org/logout", {
-        method: "POST",
-        credentials: "include",
-      });
+      await fetchApi("/logout", { method: "POST" });
     } catch {}
 
+    clearAccessToken();
     setIsLoggedIn(false);
     setMe(null);
     setCurrentPage("main");

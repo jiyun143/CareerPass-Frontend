@@ -35,11 +35,14 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
   const [showInterviewDetail, setShowInterviewDetail] = useState(false);
   const [showResumeDetail, setShowResumeDetail] = useState(false);
   const [showProfileSetupDialog, setShowProfileSetupDialog] = useState(false);
+  const [interviewResultId, setInterviewResultId] = useState<number | null>(null);
+  const [activePageOverride, setActivePageOverride] = useState<PageType | null>(null);
 
   // 사용자 정보 상태 관리
   const [user, setUser] = useState<any>(null);
   const [loadingUser, setLoadingUser] = useState(true);
   const [meError, setMeError] = useState<string | null>(null);
+  const [isProfileFromBackend, setIsProfileFromBackend] = useState(false);
   
   // 학습프로필 정보 상태 (LearningProfile에서 업데이트됨)
   const [profileInfo, setProfileInfo] = useState<{
@@ -48,19 +51,12 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
     targetJob: string;
   } | null>(null);
   
-  // 학습프로필 완료 여부 계산 함수 (localStorage 기준)
+  // 학습프로필 완료 여부 계산 함수 (백엔드 /me 기준)
   const isProfileCompleted = (): boolean => {
-    const profile = localStorage.getItem('userProfile');
-    if (!profile) {
-      return false;
-    }
-    try {
-      const parsed = JSON.parse(profile);
-      // name, major, targetJob 모두 truthy여야 완료
-      return !!(parsed.name && parsed.major && parsed.targetJob);
-    } catch {
-      return false;
-    }
+    if (!isProfileFromBackend) return false;
+    if (user?.profileCompleted === false) return false;
+    if (user?.profileCompleted === true) return true;
+    return !!(user?.major && user?.targetJob);
   };
 
   const selectedDeptData = departments.find(dept => dept.id === selectedDepartment);
@@ -71,13 +67,21 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
     try {
       setLoadingUser(true);
       setMeError(null);
+      setIsProfileFromBackend(false);
       
       // localStorage에서 이메일 확인 (OAuth 콜백에서 저장했을 수 있음)
       const storedEmail = localStorage.getItem('careerpass_email');
       
       // 1) getMe() 호출
       const me = await getMe();
+      if (import.meta.env.DEV) {
+        console.log("[CareerPackApp] /me success", {
+          email: me?.email,
+          profileCompleted: me?.profileCompleted
+        });
+      }
       setUser(me);
+      setIsProfileFromBackend(true);
     } catch (err: any) {
       console.error("유저 정보 로딩 실패:", err);
       
@@ -104,6 +108,7 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
             targetJob: "미설정" 
           });
           setUser(created);
+          setIsProfileFromBackend(true);
         } catch (createErr: any) {
           console.error("사용자 생성 실패:", createErr);
           setMeError(createErr.message || "사용자 생성 중 오류가 발생했습니다.");
@@ -267,9 +272,11 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
   
   // 페이지 변경 핸들러 (학습프로필 미완성 체크 포함)
   const handlePageChangeWithCheck = (page: PageType) => {
+    setActivePageOverride(null);
     // roadmap, resume, interview 접근 시 학습프로필 완료 여부 확인
     if ((page === 'roadmap' || page === 'resume' || page === 'interview') && !isProfileCompleted()) {
       setShowProfileSetupDialog(true);
+      onPageChange('profile');
       return;
     }
     
@@ -497,20 +504,37 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
     </div>
   );
 
+  const activePage = activePageOverride ?? currentPage;
+
   const renderMainContent = () => {
     // 메인 페이지가 아닌 경우 해당 페이지 컴포넌트 렌더링
     if (currentPage === 'resume') {
-      return <ResumeAI />;
+      return <ResumeAI onNavigateProfile={() => onPageChange('profile')} />;
     }
     if (currentPage === 'interview') {
-      return <InterviewAI />;
+      return (
+        <InterviewAI
+          onNavigateProfile={() => {
+            setActivePageOverride(null);
+            onPageChange('profile');
+          }}
+          initialInterviewId={interviewResultId}
+          onClearInterviewResultId={() => setInterviewResultId(null)}
+        />
+      );
     }
     if (currentPage === 'profile') {
       return (
         <LearningProfile 
           userId={me?.id} 
+          email={me?.email}
           onProfileComplete={handleProfileComplete}
           onProfileInfoChange={handleProfileInfoChange}
+          onNavigateInterviewResult={(interviewId) => {
+            setInterviewResultId(interviewId);
+            setActivePageOverride('profile');
+            onPageChange('interview');
+          }}
         />
       );
     }
@@ -564,7 +588,6 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
 
   // 프로필 미완료 시 ProfileRequired 화면 강제 표시
   // 단, 현재 경로가 'profile' (learning-profile)일 때는 예외로 하고 LearningProfile을 바로 보여주기
-  // 학습프로필 완료 여부는 localStorage 기준으로 판단
   if (!isProfileCompleted() && currentPage !== 'profile') {
     return (
       <ProfileRequired
@@ -594,8 +617,8 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
             {/* 메뉴 */}
             <div className="flex items-center gap-2">
               <Button
-                variant={currentPage === 'roadmap' ? "default" : "ghost"}
-                className={currentPage === 'roadmap' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
+                variant={activePage === 'roadmap' ? "default" : "ghost"}
+                className={activePage === 'roadmap' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
                 onClick={() => {
                   if (currentPage === 'roadmap') {
                     setCurrentSection('dashboard');
@@ -607,25 +630,28 @@ export function CareerPackApp({ currentPage, onPageChange, onLogout, onProfileCo
                 취업 로드맵
               </Button>
               <Button
-                variant={currentPage === 'resume' ? "default" : "ghost"}
-                className={currentPage === 'resume' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
+                variant={activePage === 'resume' ? "default" : "ghost"}
+                className={activePage === 'resume' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
                 onClick={() => handlePageChangeWithCheck('resume')}
               >
                 <FileText className="w-4 h-4 mr-2" />
                 자기소개서 AI
               </Button>
               <Button
-                variant={currentPage === 'interview' ? "default" : "ghost"}
-                className={currentPage === 'interview' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
+                variant={activePage === 'interview' ? "default" : "ghost"}
+                className={activePage === 'interview' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
                 onClick={() => handlePageChangeWithCheck('interview')}
               >
                 <Mic className="w-4 h-4 mr-2" />
                 AI 모의면접
               </Button>
               <Button
-                variant={currentPage === 'profile' ? "default" : "ghost"}
-                className={currentPage === 'profile' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
-                onClick={() => onPageChange('profile')}
+                variant={activePage === 'profile' ? "default" : "ghost"}
+                className={activePage === 'profile' ? "bg-[#051243] text-white hover:bg-[#051243]/90" : "hover:bg-gray-100 hover:text-[#051243]"}
+                onClick={() => {
+                  setActivePageOverride(null);
+                  onPageChange('profile');
+                }}
               >
                 <User className="w-4 h-4 mr-2" />
                 학습 프로필

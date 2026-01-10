@@ -1,23 +1,8 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-const GOOGLE_REDIRECT_URI = import.meta.env.VITE_GOOGLE_REDIRECT_URI;
-
-const GOOGLE_AUTH_URL =
-  "https://accounts.google.com/o/oauth2/v2/auth" +
-  `?client_id=${encodeURIComponent(GOOGLE_CLIENT_ID)}` +
-  `&redirect_uri=${encodeURIComponent(GOOGLE_REDIRECT_URI)}` +
-  `&response_type=code` +
-  `&scope=openid%20email%20profile` +
-  `&access_type=offline` +
-  `&prompt=consent`;
-
-console.log("CLIENT =", GOOGLE_CLIENT_ID);
-console.log("REDIRECT =", GOOGLE_REDIRECT_URI);
-console.log("AUTH_URL =", GOOGLE_AUTH_URL);
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
-import { ArrowLeft, GraduationCap } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import logoImage from "figma:asset/83510238e736cd0a50e47278737c5f6a27f22463.png";
 
 interface LoginPageProps {
@@ -27,6 +12,9 @@ interface LoginPageProps {
 
 export function LoginPage({ onLogin, onBack }: LoginPageProps) {
   const handleGoogleLogin = () => {
+    if (import.meta.env.DEV) {
+      console.log("[Login] redirecting to OAuth", `${API_BASE_URL}/oauth2/authorization/google`);
+    }
     window.location.href = `${API_BASE_URL}/oauth2/authorization/google`;
   };
 

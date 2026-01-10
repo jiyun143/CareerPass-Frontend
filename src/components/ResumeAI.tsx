@@ -3,21 +3,30 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
-import { FileText, Upload, Bot, CheckCircle, Edit3, X, AlertCircle, Save } from "lucide-react";
-import { requestResumeFeedback, createIntroduction } from "../api";
+import { FileText, Upload, Bot, CheckCircle, Edit3, X, AlertCircle } from "lucide-react";
+import { createIntroductionAIFeedback } from "../api";
 import ReactMarkdown from "react-markdown";
 import { IntroFeedbackResponse } from "../types/feedback";
 
-export function ResumeAI() {
+interface ResumeAIProps {
+  onNavigateProfile?: () => void;
+}
+
+export function ResumeAI({ onNavigateProfile }: ResumeAIProps = {}) {
   const [currentStep, setCurrentStep] = useState<'upload' | 'write' | 'analysis' | 'chat'>('upload');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [directWriteText, setDirectWriteText] = useState('');
   const [aiResult, setAiResult] = useState<IntroFeedbackResponse | null>(null);
   const [error, setError] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleGoToProfile = () => {
+    if (!onNavigateProfile) return;
+    onNavigateProfile();
+    if (typeof window !== "undefined") {
+      window.scrollTo(0, 0);
+    }
+  };
 
   const handleFileSelect = () => {
     fileInputRef.current?.click();
@@ -54,14 +63,8 @@ export function ResumeAI() {
     
     // 빈 입력 체크
     if (!resumeContent) {
-      setError('자기소개서 내용을 입력해주세요.');
       return;
     }
-
-    // userId 가져오기 (없으면 기본값 1 사용)
-    const userIdStr = localStorage.getItem('userId');
-    const userId = userIdStr ? parseInt(userIdStr, 10) : 1;
-    const finalUserId = isNaN(userId) ? 1 : userId;
 
     // 에러 초기화 및 로딩 시작
     setError('');
@@ -69,159 +72,34 @@ export function ResumeAI() {
     setCurrentStep('analysis');
 
     try {
-      // API 호출
-      const result = await requestResumeFeedback(finalUserId, resumeContent);
-      
-      // API 응답 구조 확인을 위한 로그
-      console.log('ResumeAI API 응답 전체:', result);
-      const responseKeys = Object.keys(result || {});
-      console.log('응답 키 목록:', responseKeys);
-      
-      // 응답 검증 및 상태 저장
-      if (result && result.feedback) {
-        // 백엔드 응답 구조에 맞게 필드 매핑
-        // IntroFeedbackResponse: { userId, feedback, original_resume, regen_resume, regen_toss_resume }
-        const mappedResult: IntroFeedbackResponse = {
-          userId: result.userId || undefined,
-          feedback: result.feedback || '',
-          original_resume: result.original_resume || result.originalResume || resumeContent || '',
-          regen_resume: result.regen_resume || result.regenResume || '',
-          regen_toss_resume: result.regen_toss_resume || result.regenTossResume || ''
-        };
-        
-        console.log('매핑된 결과:', {
-          userId: mappedResult.userId || '없음',
-          feedback: mappedResult.feedback ? '있음' : '없음',
-          original_resume: mappedResult.original_resume ? '있음 (' + mappedResult.original_resume.substring(0, 50) + '...)' : '없음',
-          regen_resume: mappedResult.regen_resume ? '있음 (' + mappedResult.regen_resume.substring(0, 50) + '...)' : '없음',
-          regen_toss_resume: mappedResult.regen_toss_resume ? '있음 (' + mappedResult.regen_toss_resume.substring(0, 50) + '...)' : '없음'
-        });
-        
-        // 수정된 자기소개서가 없으면 경고
-        if (!mappedResult.regen_resume || !mappedResult.regen_resume.trim()) {
-          console.warn('수정된 자기소개서 필드를 찾을 수 없습니다. 응답의 모든 키:', responseKeys);
-          console.warn('응답 전체 내용:', JSON.stringify(result, null, 2));
+      const result = await createIntroductionAIFeedback(resumeContent);
+      let parsedSection = null;
+
+      if (result?.sectionFeedback) {
+        if (typeof result.sectionFeedback === "string") {
+          try {
+            parsedSection = JSON.parse(result.sectionFeedback);
+          } catch (parseError) {
+            console.error("sectionFeedback 파싱 실패:", parseError);
+          }
+        } else if (typeof result.sectionFeedback === "object") {
+          parsedSection = result.sectionFeedback;
         }
-        
-        setAiResult(mappedResult);
-        setCurrentStep('chat');
-      } else {
-        throw new Error('피드백 응답 형식이 올바르지 않습니다.');
       }
+
+      const mappedResult: IntroFeedbackResponse = {
+        feedbackText: result?.feedbackText || "",
+        sectionFeedback: parsedSection
+      };
+
+      setAiResult(mappedResult);
+      setCurrentStep('chat');
     } catch (err: any) {
       console.error('피드백 요청 실패:', err);
-      
-      // 에러 메시지를 사용자 친화적으로 처리
-      let errorMessage = '피드백을 받는 중 오류가 발생했습니다.';
-      
-      if (err.message) {
-        // HTTP 에러 메시지에서 불필요한 부분 제거
-        if (err.message.includes('HTTP error!') || err.message.includes('status:')) {
-          // "HTTP error! status: 404, message: Not Found" 같은 메시지를 간단하게
-          if (err.message.includes('404')) {
-            errorMessage = '서버에서 요청한 경로를 찾을 수 없습니다. 서버 설정을 확인해주세요.';
-          } else if (err.message.includes('500')) {
-            errorMessage = '서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요.';
-          } else {
-            errorMessage = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.';
-          }
-        } else if (err.message.includes('연결') || err.message.includes('서버')) {
-          errorMessage = err.message;
-        } else if (err.message.includes('Failed to fetch')) {
-          errorMessage = '서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.';
-        } else {
-          errorMessage = err.message;
-        }
-      }
-      
-      setError(errorMessage);
+      setError("자기소개서 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
       setCurrentStep('write'); // 에러 시 작성 페이지로 돌아가기
     } finally {
       setIsAnalyzing(false);
-    }
-  };
-
-  const handleSaveIntroduction = async () => {
-    const resumeContent = directWriteText.trim();
-    
-    if (!resumeContent) {
-      setError('저장할 자기소개서 내용이 없습니다.');
-      return;
-    }
-
-    // userId 가져오기 (없으면 기본값 1 사용)
-    const userIdStr = localStorage.getItem('userId');
-    const userId = userIdStr ? parseInt(userIdStr, 10) : 1;
-    const finalUserId = isNaN(userId) ? 1 : userId;
-
-    // jobApplied 값 가져오기 (localStorage의 userProfile에서 targetJob 사용, 없으면 기본값)
-    let jobApplied = "네이버 자기소개서"; // 기본값
-    try {
-      const userProfileStr = localStorage.getItem('userProfile');
-      if (userProfileStr) {
-        const userProfile = JSON.parse(userProfileStr);
-        if (userProfile.targetJob && userProfile.targetJob.trim()) {
-          jobApplied = userProfile.targetJob;
-        }
-      }
-    } catch (e) {
-      console.warn('userProfile 파싱 실패:', e);
-    }
-
-    setIsSaving(true);
-    setError('');
-    setSaveSuccess(false);
-
-    try {
-      // 자기소개서 저장 API 호출
-      const response = await createIntroduction({
-        userId: finalUserId,
-        jobApplied: jobApplied, // 필수 필드이므로 값 설정
-        introText: resumeContent
-      });
-
-      if (response && response.id) {
-        setSaveSuccess(true);
-        console.log('자기소개서 저장 성공:', response);
-        
-        // 1) 자기소개서 저장 완료 시 introduction.id를 localStorage에 저장
-        localStorage.setItem("lastIntroductionId", String(response.id));
-        
-        // 자기소개서 저장 이벤트 발생 (LearningProfile에서 리스닝)
-        window.dispatchEvent(new CustomEvent('introductionSaved'));
-        
-        // 성공 메시지는 3초 후 자동으로 사라지도록
-        setTimeout(() => {
-          setSaveSuccess(false);
-        }, 3000);
-      } else {
-        throw new Error('저장 응답 형식이 올바르지 않습니다.');
-      }
-    } catch (err: any) {
-      console.error('자기소개서 저장 실패:', err);
-      let errorMessage = '자기소개서 저장 중 오류가 발생했습니다.';
-      
-      if (err.message) {
-        if (err.message.includes('HTTP error!') || err.message.includes('status:')) {
-          if (err.message.includes('404')) {
-            errorMessage = '저장 경로를 찾을 수 없습니다. 서버 설정을 확인해주세요.';
-          } else if (err.message.includes('500')) {
-            errorMessage = '서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요.';
-          } else {
-            errorMessage = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.';
-          }
-        } else if (err.message.includes('연결') || err.message.includes('서버')) {
-          errorMessage = err.message;
-        } else if (err.message.includes('Failed to fetch')) {
-          errorMessage = '서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.';
-        } else {
-          errorMessage = err.message;
-        }
-      }
-      
-      setError(errorMessage);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -264,6 +142,9 @@ export function ResumeAI() {
               className="min-h-[300px] resize-none border-2 rounded-xl focus:border-primary/50 transition-colors"
               maxLength={2000}
             />
+            {!directWriteText.trim() && !error && (
+              <p className="text-sm text-red-600">자기소개서를 입력해주세요.</p>
+            )}
             
             <div className="flex justify-between items-center">
               <span className="text-sm text-muted-foreground">
@@ -351,6 +232,15 @@ export function ResumeAI() {
 
   // 분석 결과 페이지 (채팅 기능 제거)
   if (currentStep === 'chat') {
+    const summaryText =
+      aiResult?.feedbackText?.trim() ||
+      aiResult?.sectionFeedback?.feedback?.trim() ||
+      "";
+    const originalResume =
+      aiResult?.sectionFeedback?.originalResume?.trim() || directWriteText.trim();
+    const regenResume = aiResult?.sectionFeedback?.regenResume?.trim() || "";
+    const regenTossResume = aiResult?.sectionFeedback?.regenTossResume?.trim() || "";
+
     return (
       <div className="space-y-6">
         <div className="space-y-2">
@@ -379,8 +269,8 @@ export function ResumeAI() {
                     className="text-gray-800 whitespace-pre-wrap break-words"
                     style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
                   >
-                    {aiResult.original_resume && aiResult.original_resume.trim() ? (
-                      <ReactMarkdown>{aiResult.original_resume}</ReactMarkdown>
+                    {originalResume ? (
+                      <ReactMarkdown>{originalResume}</ReactMarkdown>
                     ) : (
                       <p className="text-gray-500 italic">원본 자기소개서 내용이 없습니다.</p>
                     )}
@@ -394,8 +284,8 @@ export function ResumeAI() {
                     className="prose prose-sm max-w-none text-gray-900"
                     style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
                   >
-                    {aiResult.feedback && aiResult.feedback.trim() ? (
-                      <ReactMarkdown>{aiResult.feedback}</ReactMarkdown>
+                    {summaryText ? (
+                      <ReactMarkdown>{summaryText}</ReactMarkdown>
                     ) : (
                       <p className="text-gray-500 italic">피드백 내용이 없습니다.</p>
                     )}
@@ -409,8 +299,8 @@ export function ResumeAI() {
                     className="text-gray-800 whitespace-pre-wrap break-words"
                     style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
                   >
-                    {aiResult.regen_resume && aiResult.regen_resume.trim() ? (
-                      <ReactMarkdown>{aiResult.regen_resume}</ReactMarkdown>
+                    {regenResume ? (
+                      <ReactMarkdown>{regenResume}</ReactMarkdown>
                     ) : (
                       <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
                         <p className="text-yellow-800 text-sm">
@@ -424,14 +314,14 @@ export function ResumeAI() {
                 </section>
 
                 {/* 토스 인재상 버전 자기소개서 */}
-                {aiResult.regen_toss_resume && aiResult.regen_toss_resume.trim() && (
+                {regenTossResume && (
                   <section className="border rounded-lg p-4 bg-white shadow-sm">
                     <h2 className="text-lg font-semibold mb-2">🎯 토스 인재상 버전 자기소개서</h2>
                     <div 
                       className="text-gray-800 whitespace-pre-wrap break-words"
                       style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
                     >
-                      <ReactMarkdown>{aiResult.regen_toss_resume}</ReactMarkdown>
+                      <ReactMarkdown>{regenTossResume}</ReactMarkdown>
                     </div>
                   </section>
                 )}
@@ -444,33 +334,12 @@ export function ResumeAI() {
           </CardContent>
         </Card>
 
-        {/* 저장 버튼 및 메시지 */}
-        <Card className="border-2 rounded-xl">
-          <CardContent className="p-6 space-y-4">
-            {error && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center gap-2">
-                <AlertCircle className="w-5 h-5 text-red-600" />
-                <p className="text-red-800 text-sm">{error}</p>
-              </div>
-            )}
-            {saveSuccess && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-center gap-2">
-                <CheckCircle className="w-5 h-5 text-green-600" />
-                <p className="text-green-800 text-sm">자기소개서가 학습 프로필에 저장되었습니다.</p>
-              </div>
-            )}
-            <div className="flex justify-end">
-              <Button 
-                onClick={handleSaveIntroduction}
-                disabled={isSaving || !aiResult || !directWriteText.trim()}
-                className="px-6"
-              >
-                <Save className="w-4 h-4 mr-2" />
-                {isSaving ? '저장 중...' : '저장하기'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="flex justify-center">
+          <Button variant="ghost" className="text-primary" onClick={handleGoToProfile}>
+            학습 프로필로 이동
+          </Button>
+        </div>
+
       </div>
     );
   }

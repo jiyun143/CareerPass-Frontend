@@ -16,7 +16,7 @@ import {
   Edit2,
   Save
 } from "lucide-react";
-import { getUserById, updateUserProfile } from "../api";
+import { getMe, updateMyProfile } from "../api";
 
 export function ProfileSection() {
   const [isEditing, setIsEditing] = useState(false);
@@ -34,30 +34,26 @@ export function ProfileSection() {
     interests: [] as string[]
   });
 
+  const trimmedMajor = profile.department.trim();
+  const trimmedTargetJob = profile.targetJob.trim();
+  const isProfileFormValid = !!(trimmedMajor && trimmedTargetJob);
+
   // 컴포넌트 마운트 시 사용자 정보 조회
   useEffect(() => {
     const fetchUserProfile = async () => {
-      const userId = localStorage.getItem('userId');
-      if (!userId) {
-        setError("로그인이 필요합니다.");
-        setIsLoading(false);
-        return;
-      }
-
       try {
         setIsLoading(true);
-        // GET: 특정 사용자 조회
-        const userData = await getUserById(parseInt(userId));
-        
+        const userData = await getMe();
+
         setProfile({
-          id: userData.id,
-          name: userData.name || "",
-          email: userData.email || "",
-          studentId: userData.studentId || "",
-          department: userData.department || "",
-          currentYear: userData.currentYear || "",
-          targetJob: userData.targetJob || "",
-          interests: userData.interests || []
+          id: userData?.id ?? null,
+          name: userData?.nickname || "",
+          email: userData?.email || "",
+          studentId: "",
+          department: userData?.major || "",
+          currentYear: "",
+          targetJob: userData?.targetJob || "",
+          interests: []
         });
       } catch (err: any) {
         console.error("사용자 정보 조회 실패:", err);
@@ -78,9 +74,8 @@ export function ProfileSection() {
   ];
 
   const handleSave = async () => {
-    const userId = profile.id || localStorage.getItem('userId');
-    if (!userId) {
-      setError("사용자 ID가 없습니다.");
+    if (!isProfileFormValid) {
+      setError("전공과 목표 직무를 입력해주세요.");
       return;
     }
 
@@ -88,17 +83,21 @@ export function ProfileSection() {
       setIsSaving(true);
       setError(null);
       
-      // PATCH: 사용자 프로필 업데이트
-      await updateUserProfile(parseInt(userId.toString()), {
-        name: profile.name,
-        email: profile.email,
-        studentId: profile.studentId,
-        department: profile.department,
-        currentYear: profile.currentYear,
-        targetJob: profile.targetJob,
-        interests: profile.interests
+      await updateMyProfile({
+        nickname: profile.name?.trim() || undefined,
+        major: trimmedMajor,
+        targetJob: trimmedTargetJob
       });
-      
+
+      const refreshed = await getMe();
+      setProfile((prev) => ({
+        ...prev,
+        id: refreshed?.id ?? prev.id,
+        name: refreshed?.nickname || "",
+        email: refreshed?.email || "",
+        department: refreshed?.major || "",
+        targetJob: refreshed?.targetJob || ""
+      }));
       setIsEditing(false);
     } catch (err: any) {
       console.error("프로필 저장 실패:", err);
@@ -147,7 +146,7 @@ export function ProfileSection() {
                 variant={isEditing ? "default" : "outline"}
                 size="sm"
                 onClick={isEditing ? handleSave : () => setIsEditing(true)}
-                disabled={isSaving}
+                disabled={isSaving || (isEditing && !isProfileFormValid)}
               >
                 {isEditing ? (
                   <>
@@ -178,7 +177,10 @@ export function ProfileSection() {
                     {isEditing ? (
                       <Input 
                         value={profile.name} 
-                        onChange={(e) => setProfile({...profile, name: e.target.value})}
+                        onChange={(e) => {
+                          setProfile({ ...profile, name: e.target.value });
+                          setError(null);
+                        }}
                       />
                     ) : (
                       <p className="font-medium">{profile.name}</p>
@@ -190,7 +192,9 @@ export function ProfileSection() {
                     {isEditing ? (
                       <Input 
                         value={profile.studentId} 
-                        onChange={(e) => setProfile({...profile, studentId: e.target.value})}
+                        onChange={(e) => setProfile({ ...profile, studentId: e.target.value })}
+                        disabled
+                        className="bg-muted cursor-not-allowed"
                       />
                     ) : (
                       <p className="font-medium">{profile.studentId}</p>
@@ -202,7 +206,9 @@ export function ProfileSection() {
                     {isEditing ? (
                       <Input 
                         value={profile.email} 
-                        onChange={(e) => setProfile({...profile, email: e.target.value})}
+                        readOnly
+                        disabled
+                        className="bg-muted cursor-not-allowed"
                       />
                     ) : (
                       <p className="font-medium">{profile.email}</p>
@@ -214,7 +220,9 @@ export function ProfileSection() {
                     {isEditing ? (
                       <Input 
                         value={profile.currentYear} 
-                        onChange={(e) => setProfile({...profile, currentYear: e.target.value})}
+                        onChange={(e) => setProfile({ ...profile, currentYear: e.target.value })}
+                        disabled
+                        className="bg-muted cursor-not-allowed"
                       />
                     ) : (
                       <p className="font-medium">{profile.currentYear}</p>
@@ -227,13 +235,39 @@ export function ProfileSection() {
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <GraduationCap className="w-4 h-4 text-blue-600" />
-                    <span className="font-medium">{profile.department}</span>
+                    {isEditing ? (
+                      <Input
+                        value={profile.department}
+                        onChange={(e) => {
+                          setProfile({ ...profile, department: e.target.value });
+                          setError(null);
+                        }}
+                        placeholder="전공을 입력하세요"
+                      />
+                    ) : (
+                      <span className="font-medium">{profile.department}</span>
+                    )}
                   </div>
                   
                   <div className="flex items-center gap-2">
                     <Briefcase className="w-4 h-4 text-purple-600" />
-                    <span>목표 직무: {profile.targetJob}</span>
+                    {isEditing ? (
+                      <Input
+                        value={profile.targetJob}
+                        onChange={(e) => {
+                          setProfile({ ...profile, targetJob: e.target.value });
+                          setError(null);
+                        }}
+                        placeholder="목표 직무를 입력하세요"
+                      />
+                    ) : (
+                      <span>목표 직무: {profile.targetJob}</span>
+                    )}
                   </div>
+
+                  {isEditing && !isProfileFormValid && !error && (
+                    <p className="text-sm text-red-600">전공과 목표 직무를 입력해주세요.</p>
+                  )}
                   
                   <div className="flex items-start gap-2">
                     <MapPin className="w-4 h-4 text-green-600 mt-0.5" />
