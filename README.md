@@ -23,6 +23,20 @@
 
 사용자가 React 앱에서 음성 답변을 녹음하거나 자소서를 입력하면, 프론트는 이를 Spring Boot 백엔드로 전달합니다. 백엔드는 인증·권한 검사와 도메인 데이터(사용자, 면접 세션 등) 처리를 담당하면서, AI 연산이 필요한 부분만 Python FastAPI AI 서버로 위임합니다. AI 서버는 OpenAI의 **Whisper**로 음성을 텍스트로 변환하고, **GPT**로 질문 생성·답변 채점·자소서 피드백을 수행한 뒤 결과를 백엔드를 거쳐 프론트로 돌려줍니다. 이 구조 덕분에 프론트는 AI 모델 교체나 프롬프트 변경에 영향받지 않고, 백엔드는 AI 서버 장애를 자체 도메인 로직과 분리해 처리할 수 있습니다.
 
+## 화면 미리보기
+
+| 웹 초기 화면 | 로그인 화면 |
+|---|---|
+| ![웹 초기 화면](./assets/screenshots/01-home.png) | ![로그인 화면](./assets/screenshots/02-login.png) |
+
+| 로드맵 화면 | 자기소개서 홈 화면 |
+|---|---|
+| ![로드맵 화면](./assets/screenshots/03-roadmap.png) | ![자기소개서 홈 화면](./assets/screenshots/04-resume-home.png) |
+
+| AI 모의면접 홈 화면 | AI 모의면접 진행 화면 |
+|---|---|
+| ![AI 모의면접 홈 화면](./assets/screenshots/05-interview-home.png) | ![AI 모의면접 진행 화면](./assets/screenshots/06-interview-progress.png) |
+
 ## 기술 스택
 
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?style=for-the-badge&logo=react&logoColor=black)
