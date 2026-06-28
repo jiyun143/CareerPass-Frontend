@@ -25,17 +25,29 @@
 
 ## 화면 미리보기
 
-| 웹 초기 화면 | 로그인 화면 |
-|---|---|
-| ![웹 초기 화면](./assets/screenshots/01-home.png) | ![로그인 화면](./assets/screenshots/02-login.png) |
+**웹 초기 화면**
 
-| 로드맵 화면 | 자기소개서 홈 화면 |
-|---|---|
-| ![로드맵 화면](./assets/screenshots/03-roadmap.png) | ![자기소개서 홈 화면](./assets/screenshots/04-resume-home.png) |
+<img src="./assets/screenshots/01-home.png" width="700" alt="웹 초기 화면" />
 
-| AI 모의면접 홈 화면 | AI 모의면접 진행 화면 |
-|---|---|
-| ![AI 모의면접 홈 화면](./assets/screenshots/05-interview-home.png) | ![AI 모의면접 진행 화면](./assets/screenshots/06-interview-progress.png) |
+**로그인 화면**
+
+<img src="./assets/screenshots/02-login.png" width="700" alt="로그인 화면" />
+
+**로드맵 화면**
+
+<img src="./assets/screenshots/03-roadmap.png" width="700" alt="로드맵 화면" />
+
+**자기소개서 홈 화면**
+
+<img src="./assets/screenshots/04-resume-home.png" width="700" alt="자기소개서 홈 화면" />
+
+**AI 모의면접 홈 화면**
+
+<img src="./assets/screenshots/05-interview-home.png" width="700" alt="AI 모의면접 홈 화면" />
+
+**AI 모의면접 진행 화면**
+
+<img src="./assets/screenshots/06-interview-progress.png" width="700" alt="AI 모의면접 진행 화면" />
 
 ## 기술 스택
 
